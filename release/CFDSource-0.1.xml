@@ -1,0 +1,4673 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Export generator="Cache" version="25" zv="Cache for UNIX (SUSE Linux Enterprise Server for x86-64) 2013.2 (Build 421U)" ts="2013-08-05 04:18:54">
+<Class name="CFDSource.GIT.SourceControl">
+<Description>
+Implementation of the SourceControl interface for the GIT source control system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>CFDSource.SourceControl</Super>
+<TimeChanged>63039,15189.390574</TimeChanged>
+<TimeCreated>62996,58647.732482</TimeCreated>
+
+<Method name="GetStatus">
+<Description>
+This method gets the status of the project and the current branch</Description>
+<FormalSpec>pSys:CFDSource.System,*pBranch:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	// Run Status
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .pBranch, .staged, .committed, .tItems, pTrace)
+	quit $G(staged, 0)&&$G(committed, 0)
+]]></Implementation>
+</Method>
+
+<Method name="StartFeature">
+<Description>
+This method starts a new development feature. As well as marking the start of the
+new feature this method will refresh the local workspace from the repository</Description>
+<FormalSpec>pSys:CFDSource.System,pFeature:%String,pPull:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	// Check Status - Must be committed at this point
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	quit:'committed $$$ERROR("There are uncommitted/staged local changes, you may have work outstanding. Rectify manually or Export system")
+	
+	// Switch to develop
+	if tBranch'="develop" {
+		do pTrace.AddCheckpoint("Switching to [develop]")
+		// TODO: Need to handle this
+		quit:tBranch'="develop" $$$ERROR("Not currently on [develop] branch, you may have work outstanding. Rectify manually")
+	}
+	
+	// Pull in from remote
+	if pPull=1 {
+		do pTrace.AddCheckpoint("Pulling from remote repository to get latest")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "pull origin develop")
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+		do pTrace.AddCheckpoint("Checking Status")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+		do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+		quit:'committed $$$ERROR("There are merges that need to be reconciled, you may have work outstanding. Rectify manually")
+	}
+	
+	// Create Feature Branch
+	do pTrace.AddCheckpoint("Creating Feature Branch")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "checkout -b "_pFeature_" develop")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	quit:tBranch'=pFeature $$$ERROR("Unable to create/switch to branch, branch is now: "_tBranch_" (try git status on command line)")
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="SwitchFeature">
+<Description>
+This method switches the working directory to a different feature.
+This will not work if the local repo has uncommited changes</Description>
+<FormalSpec>pSys:CFDSource.System,pFeature:%String,pPull:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	// Check Status - Must be committed at this point
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	quit:'committed $$$ERROR("There are uncommitted/staged local changes, you may have work outstanding. Rectify manually or Export system")
+	
+	// Switch branch
+	do pTrace.AddCheckpoint("Moving to feature branch: "_pFeature)
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "checkout "_pFeature)
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="EndFeature">
+<Description>
+This method ends the current development feature (including a commit if required)</Description>
+<FormalSpec>pSys:CFDSource.System,pPush:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	// Check Status - Must be committed at this point
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	quit:'committed $$$ERROR("There are uncommitted/staged local changes, you may have work outstanding. Rectify manually or Export system")
+	
+	// Go back to [develop]
+	do pTrace.AddCheckpoint("Moving to main [develop] branch")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "checkout develop")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	// Apply all changes from feature
+	do pTrace.AddCheckpoint("Applying Feature")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "merge --no-ff "_tBranch)
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	// Check Status (ensure all ok)
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	quit:'committed $$$ERROR("There are merges (or other errors) that need to be reconciled, you may have work outstanding. Suggest ExportSource with a commit comment")
+	
+	// Push to remote
+	if pPush {
+		do pTrace.AddCheckpoint("Pushing to origin")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "push origin develop")
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+	}
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="Pull">
+<Description>
+This method will pull/refresh the working directory from a remote source</Description>
+<FormalSpec>pSys:CFDSource.System,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "env", "")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	
+	do pTrace.AddCheckpoint("Pull from remote ...")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "pull origin "_tBranch)
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="Commit">
+<Description>
+This method is called to commit the working directory
+This method should only actually commit if there are changes!</Description>
+<FormalSpec>pSys:CFDSource.System,pMessage:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	// Check status - might not need to commit
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	
+	do pTrace.AddPOI("Status checked, we are on ["_tBranch_"] branch and we are "_$S(committed:"[Committed]", 1:"[Uncommitted]"))
+	quit:committed $$$OK
+	
+	// Stage Changes
+	do pTrace.AddCheckpoint("Staging Changes")
+	set added=0
+	set k=$O(tItems(""))
+	while k'="" {
+		if tItems(k)="deleted" { 
+			set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "rm "_tItems(k, "path"))
+			set sc=os.Run()  quit:$$$ISERR(sc)
+		}
+		else {
+			set added=1
+		}
+		set k=$O(tItems(k))
+	}
+	quit:$$$ISERR(sc) sc
+			
+	do pTrace.AddCheckpoint("Staging new items")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "add .")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+				
+	// Commit
+	do pTrace.AddCheckpoint("Committing")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -m '"_$ZSTRIP(pMessage, "*", "'")_"'")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	// Check!
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	
+	do pTrace.AddPOI("Commit completed, we are on ["_tBranch_"] branch and we are "_$S(committed:"[Committed]", 1:"[Uncommitted]"))
+	quit:'committed $$$ERROR("Could not commited local directory, review status")
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="CreateProject">
+<Description>
+Call to create a new project. This will attempt to create a new repository for the project 
+and create a local workspace pointing to the repository. It is assumed to working dir
+is already setup</Description>
+<FormalSpec>pSys:CFDSource.System,pRepoUrl:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	do:'##class(%File).Exists(path) ##class(%File).CreateDirectoryChain(path)
+	
+	do pTrace.AddCheckpoint("Initialise Local Repo")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "init")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	set stdusers=$LB("UnknownUser", "_SYSTEM", "Admin", "SuperUser", "_Ensemble")
+	set user=$S($D(^CFDSource("User"))=1:^CFDSource("User"), $LF(stdusers, $username)=0:$username, 1:"system")
+	set email=$S($D(^CFDSource("Email", user))=1:^CFDSource("Email", user), 1:user_"@"_$namespace_".domain")
+	
+	do pTrace.AddCheckpoint("Setting up user name")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "config user.name """_user_"""")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Setting up user email")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "config user.email """_email_"""")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Creating std .gitignore")
+	set f=##class(%File).%New(pSys.Location_".gitignore")
+	set sc=f.Open("WSN")  quit:$$$ISERR(sc) pTrace.SetError(sc)
+	set sc=f.WriteLine("packages/")
+	set:$$$ISOK(sc) sc=f.Flush()
+	do f.Close()
+	quit:$$$ISERR(sc) pTrace.SetError(sc)
+	
+	do pTrace.AddCheckpoint("Staging all files")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "add .")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Committing initial source")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -m 'Initial Import on New Project'")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Creating [develop] branch from master")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "checkout -b develop master")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	
+	// Add to remote
+	if pRepoUrl'=""&&committed&&(tBranch="develop") {
+		do pTrace.AddCheckpoint("Adding remote")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "remote add origin "_pRepoUrl)
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+			
+		// FUTURE: This works, but seems to take a very long time!?!
+		do pTrace.AddCheckpoint("Push local to remote")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "push origin develop")
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+	}
+	
+	quit:(committed)&&(tBranch="develop") $$$OK
+	quit $$$ERROR("Local Repo not created, may be there, but some issue. Use git status to review: "_path)
+]]></Implementation>
+</Method>
+
+<Method name="ImportProject">
+<Description>
+Call to create a local workspace on a given repository and import it.</Description>
+<FormalSpec>pSys:CFDSource.System,pRepoUrl:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set basePath=##class(CFDSource.System).ProjectLocation("")
+	set path=pSys.Location
+	do:'##class(%File).Exists(path) ##class(%File).CreateDirectoryChain(path)
+	
+	do pTrace.AddCheckpoint("Cloning Repository")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, basePath, "git", "clone -b develop "_pRepoUrl_" "_pSys.Name)
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	set stdusers=$LB("UnknownUser", "_SYSTEM", "Admin", "SuperUser", "_Ensemble")
+	set user=$S($D(^CFDSource("User"))=1:^CFDSource("User"), $LF(stdusers, $username)=0:$username, 1:"system")
+	set email=$S($D(^CFDSource("Email", user))=1:^CFDSource("Email", user), 1:user_"@"_$namespace_".domain")
+	
+	do pTrace.AddCheckpoint("Setting up user name")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "config user.name """_user_"""")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+		
+	do pTrace.AddCheckpoint("Setting up user email")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "config user.email """_email_"""")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	
+	do pTrace.AddCheckpoint("Checking Status")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "status")
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+	do ..ProcessGITResponse(os.Output, .tBranch, .staged, .committed, .tItems, pTrace)
+	
+	quit:(committed)&&(tBranch="develop") $$$OK
+	quit $$$ERROR("Some issue clonding Repo, may be there, but some issue. Use git status to review: "_path)
+]]></Implementation>
+</Method>
+
+<Method name="CreateGITHubRepo">
+<Description><![CDATA[
+This extra method creates a GITHub Repository for the project
+This does not connect the local repo to the GUTHub repo as
+the local repo may not have been created. The resulting repo
+will be git@github.com:{pUser}/{pRepoName}.git.
+<br /><b>Note 1:</b> the username is the full login ID at GIT, 
+pUser is just the GIT username, for instance I am "thegaffer", 
+but my login name is an email address.
+<br /><b>Note 2:</b> the password is not stored at all]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,pUser:%String,pUserName:%String,pPass:%String,&pRepoUrl,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddCheckpoint("Checking GITHub SSL Config exists")
+	set ret=$$$OK
+	set ns=$NAMESPACE
+	try {
+		zn "%SYS"
+		set:'##class(Security.SSLConfigs).Exists("GITHub") ret=$$$ERROR("You need an SSL config called GITHub to talk with GITHub")
+		do pTrace.AddPOI("GITHub SSL Config: "_$S($$$ISOK(ret):"ok", 1:"missing"))
+	}
+	catch ex {
+		set ret=$$$ERROR("Failed to check if SSLConfig exists: "_$system.Status.GetErrorText(ex.AsStatus()))
+	}
+	zn ns
+	quit:$$$ISERR(ret) ret
+
+	do pTrace.AddCheckpoint("Contacting GITHub at api.github.com")
+	set req=##class(%Net.HttpRequest).%New()
+	set req.Https=1
+	set req.SSLConfiguration=$G(^CFDSource("GITHubSSLConfig"), "GITHub")
+	set req.Username=pUserName
+	set req.Password=pPass
+	set req.Server="api.github.com"
+	do req.EntityBody.Write("{""name"":"""_pSys.Name_"""}")
+	set req.ContentType="application/json"
+	set sc=req.Post("/user/repos")
+	quit:$$$ISERR(sc) pTrace.SetError(sc)
+	// FUTURE: Handle the response better. It's JSON so can easily process, esp 2013.2 onwards.
+	
+	set pRepoUrl="git@github.com:"_pUser_"/"_pSys.Name_".git"
+	do pTrace.AddPOI("New central repository = "_pRepoUrl)
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="CreateFileRepo">
+<Description>
+This creates an {base} external file based repository. 
+As above this does not connect to the local repo</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,pPath:%String,&pRepoUrl:%String,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	// Ensure path has a trailing slash. Assume /, but use \ if present
+	set sep="/"
+	set:$F(pPath, "\")>0 sep="\"
+	if ($E(pPath, *)'="/")&&($E(pPath, *)'="\") { set pPath=pPath_sep }
+	
+	// Ensure path exists
+	if '##class(%File).Exists(pPath) {
+		if '##class(%File).CreateDirectoryChain(pPath) {
+			do pTrace.AddWarning("Cannot create file based bare GIT repository as path does not exist or is no accessible")
+			quit $$$ERROR("Cannot create file repo path")
+		}
+	}
+	
+	do pTrace.AddCheckpoint("Creating Repository")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, pPath, "git", "init --bare "_pSys.Name_".git")
+	set sc=os.Run()  quit:$$$ISERR(sc) pTrace.SetError(sc)
+		
+	set pRepoUrl="file://"_$REPLACE(pPath, "\", "/")_pSys.Name_".git"
+	do pTrace.AddPOI("New central repository = "_pRepoUrl)
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="AddRemoteRepo">
+<Description>
+This method adds a remote repository to the local working repo.
+All pushes/pulls will be to this repo.
+By default this command will push everything to the remote repo.</Description>
+<FormalSpec>pSys:CFDSource.System,pRepoUrl:%String,pPush:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set path=pSys.Location
+	
+	do pTrace.AddCheckpoint("Adding remote")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "remote add origin "_pRepoUrl)
+	set sc=os.Run()  quit:$$$ISERR(sc) sc
+			
+	if pPush {
+		// FUTURE: This works, but seems to take a very long time!!!
+		do pTrace.AddCheckpoint("Push local to remote")
+		set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "push origin develop")
+		set sc=os.Run()  quit:$$$ISERR(sc) sc
+	}
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Parameter name="GITOK">
+<Default>Already up-to-date</Default>
+</Parameter>
+
+<Parameter name="GITBRANCH">
+<Default># On branch </Default>
+</Parameter>
+
+<Parameter name="GITUNSTAGED">
+<Default># Changes not staged for commit:</Default>
+</Parameter>
+
+<Parameter name="GITUNSTAGED2">
+<Default># Untracked files:</Default>
+</Parameter>
+
+<Parameter name="GITCLEAN">
+<Default>nothing to commit</Default>
+</Parameter>
+
+<Parameter name="GITNEW">
+<Default>new file:</Default>
+</Parameter>
+
+<Parameter name="GITMOD">
+<Default>modified:</Default>
+</Parameter>
+
+<Parameter name="GITDEL">
+<Default>deleted:</Default>
+</Parameter>
+
+<Method name="ProcessGITResponse">
+<Description>
+This method processes the return from a GIT command to work out where we are</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pRes:%Stream.Object,*pCurrentBranch:%String,*pStaged:%Boolean,*pCommitted:%Boolean,*items,pTrace:CFDSource.Util.Trace</FormalSpec>
+<Private>1</Private>
+<Implementation><![CDATA[
+	set pCurrentBranch=""
+	set pStaged=1		// Wait to see changes not staged before
+	set pCommitted=0	// We must see the nothing to commit, otherwise assume there are changes
+	
+	while 'pRes.AtEnd {
+		set ln=pRes.ReadLine()
+		kill modified
+
+		if $F(ln, ..#GITOK)=($L(..#GITOK)+1) { 
+			set pCommitted=1
+			quit 	// No point doing the other elements
+		}
+		elseif $F(ln, ..#GITBRANCH)=($L(..#GITBRANCH)+1) { set pCurrentBranch=$E(ln, $L(..#GITBRANCH)+1, *) }
+		elseif $F(ln, ..#GITUNSTAGED)=($L(..#GITUNSTAGED)+1) { set pStaged=0 }
+		elseif $F(ln, ..#GITUNSTAGED2)=($L(..#GITUNSTAGED2)+1) { set pStaged=0 }
+		elseif $F(ln, ..#GITCLEAN)=($L(..#GITCLEAN)+1) { set pCommitted=1 }
+		
+		elseif $F(ln, ..#GITNEW)>0 { set modified=$ZSTRIP($E(ln, $F(ln, ..#GITNEW), *), "<>CPW")="new" }
+		elseif $F(ln, ..#GITMOD)>0 { set modified=$ZSTRIP($E(ln, $F(ln, ..#GITMOD), *), "<>CPW")="modified" }
+		elseif $F(ln, ..#GITDEL)>0 { set modified=$ZSTRIP($E(ln, $F(ln, ..#GITDEL), *), "<>CPW")="deleted" }
+		
+		if $D(modified) {
+			set iName=..GetInternalName($P(modified, "=", 1))
+			set items(iName)=$P(modified, "=", 2)
+			set items(iName, "path")=$P(modified, "=", 1)
+		}
+	}
+	
+	// If we are not staged, we are not committed
+	set:pStaged=0 pCommitted=0
+	do pTrace.AddPOI("Current GIT Status. Branch="_pCurrentBranch_", Status="_$S(pStaged:"Staged", pCommitted:"Committed", 1:"Pending"))
+]]></Implementation>
+</Method>
+
+<Method name="GetInternalName">
+<Description>
+This gets the internal name given its relative path</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pathName:%String</FormalSpec>
+<Private>1</Private>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	if $F(pathName, "src/main/cache/")>0 { set pathName=$E(pathName, $L("src/main/cache/")+1, *) }
+	elseif $F(pathName, "src/main/resources/")>0 { set pathName=$E(pathName, $L("src/main/resources/")+1, *) }
+	elseif $F(pathName, "src/test/cache/")>0 { set pathName=$E(pathName, $L("src/test/cache/")+1, *) }
+	elseif $F(pathName, "src/test/resources/")>0 { set pathName=$E(pathName, $L("src/test/resources/")+1, *) }
+	
+	set pathName=$REPLACE(pathName, "/", ".")
+	quit pathName
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Installer">
+<Description>
+Class to install applications into the Environment
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<TimeChanged>63038,60679.170719</TimeChanged>
+<TimeCreated>63024,65566.577019</TimeCreated>
+
+<Method name="GetDBDir">
+<Description>
+Returns the root location for all databases (includes trailing slash / or \)</Description>
+<ClassMethod>1</ClassMethod>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit $system.Util.ManagerDirectory()
+]]></Implementation>
+</Method>
+
+<Method name="Prepare">
+<Description>
+This method prepares a new namespace including data and code databases
+If the namespace already exists, no changes will be made
+Both databases will be created if different.
+If pCodeName is blank, code and data will be in same database
+If pDataName is blank, DB will be named after namespace
+The DB will be created with a %DB_{DBNAME} resource</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pNamespace:%String,pDataName:%String,pCodeName:%String,pEnsemble:%Boolean=1</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set ret=$$$OK
+	set ns=$NAMESPACE
+	try {
+		zn "%sys"
+		
+		set pNamespace=$ZCVT(pNamespace,"U")
+		set:$G(pDataName)="" pDataName=pNamespace
+		set:$G(pCodeName)="" pCodeName=pDataName
+		
+		quit:##class(Config.Namespaces).Exists(pNamespace)
+	
+		set tBaseDir=..GetDBDir()
+		set tInstaller=##class(%Installer.Installer).%New()
+	
+		// a. Create Data DB if it does not exist
+		if '##class(Config.Databases).Exists(pDataName) {
+			do tInstaller.CreateDatabase(pDataName, tBaseDir_pDataName, "yes", "%DB_"_pDataName)
+		}
+	
+		// b. Create Code DB if different from Data and does not exist
+		if pCodeName'=pDataName&&'##class(Config.Databases).Exists(pCodeName) {
+			do tInstaller.CreateDatabase(pCodeName, tBaseDir_pCodeName, "yes", "%DB_"_pCodeName)
+		}
+	
+		// c. Create the Namespace & CSP App
+		if '##class(Config.Namespaces).Exists(pNamespace) {
+			do tInstaller.CreateNamespace(pNamespace, pCodeName, pDataName, "yes")
+			do tInstaller.ActivateConfiguration(pNamespace)
+			do:pEnsemble tInstaller.EnableEnsemble(pNamespace,,,"","","36")
+			do tInstaller.ActivateConfiguration(pNamespace)
+		
+			// Create the Web App for Namespace
+			set pUrl="/csp/"_$ZCVT(pNamespace, "L")
+			set pDescription="Web App for "_pNamespace
+			set pDirectory=$system.Util.InstallDirectory()_"CSP/"_pNamespace
+			set pResource=""
+			set pRecurse="0"	// ??? 
+			set pLoginClass=""
+			set pGrant=""
+			set pCookiePath=""
+			set pAuthMethods="32"
+			set pLockCSPName=1
+			set pEventClass=""
+			set pDefaultTimeout=""
+			set pDefaultSuperclass=""
+			set pUseSessionCookie=""
+			set pServeFiles=""
+			set pServeFilesTimeout=""
+			set pCustomErrorPage=""
+			set pPackageName=""
+			set pChangePasswordPage=""
+			set pGroupById=""
+			set pCspZenEnabled=1
+			set pInboundWebServicesEnabled=1
+			set pTwoFactorEnabled=0
+			set pIsNameSpaceDefault=1
+			set pPermittedClasses=""
+			do tInstaller.CSPApplication(pUrl,pNamespace,pDescription,pDirectory,pResource,pRecurse,pLoginClass,pGrant,pCookiePath,pAuthMethods,pLockCSPName,pEventClass,pDefaultTimeout,pDefaultSuperclass,pUseSessionCookie,pServeFiles,pServeFilesTimeout,pCustomErrorPage,pPackageName,pChangePasswordPage,pGroupById,pCspZenEnabled,pInboundWebServicesEnabled,pTwoFactorEnabled,pIsNameSpaceDefault,pPermittedClasses)
+		}
+	}
+	catch ex {
+		set ret=ex.AsStatus()
+	}
+	
+	zn ns
+	
+	quit ret
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.SourceControl">
+<Description>
+This abstract class represents an object that interacts with a source
+control system.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Abstract>1</Abstract>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>%RegisteredObject</Super>
+<TimeChanged>63038,60682.522769</TimeChanged>
+<TimeCreated>62579,80610.696937</TimeCreated>
+
+<Method name="GetStatus">
+<Description>
+This method gets the status of the project, return 1 if fully
+committed, otherwise 0. The current branch is also returned.</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,*pBranch:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+</Method>
+
+<Method name="StartFeature">
+<Description>
+This method starts a new development feature. Optionally this
+method will also pull from a remote repository</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pFeature:%String,pPull:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="SwitchFeature">
+<Description>
+This method switches the working directory to a different feature. 
+This will not work if the local repo has uncommited changes</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pFeature:%String,pPull:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="EndFeature">
+<Description>
+This method ends the current development feature (including a commit if required)</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pPush:%Boolean=1,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="Pull">
+<Description>
+This method will pull/refresh the working directory from a remote source</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="Commit">
+<Description>
+This method is called to commit the working directory.
+This method should only actually commit if there are changes!</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pMessage:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="CreateProject">
+<Description>
+Call to create a new project. This will attempt to create a new repository for the project 
+and create a local workspace pointing to the repository.</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pRepoUrl:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+
+<Method name="ImportProject">
+<Description>
+Call to create a local workspace on a given repository and import it.</Description>
+<Abstract>1</Abstract>
+<FormalSpec>pSys:CFDSource.System,pRepoUrl:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Studio.StudioControl">
+<Description>
+Source control for CFD.
+This module provides a menu from within Studio to perform the
+common import/export/refresh options
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%Studio.SourceControl.Base</Super>
+<TimeChanged>63038,60797.225859</TimeChanged>
+<TimeCreated>62583,76081.020062</TimeCreated>
+
+<Property name="ProjectName">
+<Description>
+The name of the current project</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="System">
+<Description>
+The system we are working with (set when the project opens)</Description>
+<Type>CFDSource.System</Type>
+</Property>
+
+<Property name="Feature">
+<Description>
+The current feature (set when opening the project or using one of the dialogs)</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Debug">
+<Description>
+Determines if in debug mode</Description>
+<Type>%Integer</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ForwardEdit">
+<Type>%Boolean</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Method name="DebugGet">
+<Description>
+Accessor for the debug property</Description>
+<CodeMode>expression</CodeMode>
+<ReturnType>%Integer</ReturnType>
+<Implementation><![CDATA[$G(^CFDSource("Debug"), 0)
+]]></Implementation>
+</Method>
+
+<Method name="ForwardEditGet">
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	quit:$G(^CFDSource("ForwardEdit"), 0)=1 1
+	quit:$G(^CFDSource("Debug"), 0)>2 1
+	quit 0
+]]></Implementation>
+</Method>
+
+<XData name="Menu">
+<Description>
+///////////////////////////////////////////////////////////////////////////
+XDATA Block holds the Menu items</Description>
+<Data><![CDATA[
+<MenuBase>
+<Menu Name="Confidence" Type="0">
+<MenuItem Name="Project" />			<!-- Shows the settings in the current project -->
+<MenuItem Name="Fetch" />			<!-- Fetch from local repo and import, optional pull -->
+<MenuItem Name="Package" />			<!-- Export the package for Install on another machine -->
+<MenuItem Name="Settings" />			<!-- Shows the settings for CFD in namespace -->
+<MenuItem Separator="1" Name="----------------------------------"/> 
+<MenuItem Name="Start Feature" />	<!-- Start a new development feature -->
+<MenuItem Name="Export" />			<!-- Export and locally commit current state -->
+<MenuItem Name="End Feature" />		<!-- End development, merge and push the changes to remote repositories -->
+<MenuItem Separator="1" Name="----------------------------------"/> 
+<MenuItem Name="Import System" />			<!-- Import an existing GIT system into this machine -->
+<MenuItem Name="Create System" />			<!-- Create a brand new system and set up local GIT repo -->
+</Menu>
+</MenuBase>
+]]></Data>
+</XData>
+
+<Method name="UserAction">
+<Description><![CDATA[
+This is called when the user has selected a menu item and in this method we must
+decide if there any further user input required. Briefly this is:<ul>
+<li>0 = No further input required</li>
+<li>1 = Default Yes, No, Cancel (target has text)</li>
+<li>2 = Run CSP (target is url, page will be passed doc name, selected text, project name and namespace</li>
+<li>3 = Run EXE (target is name of exe)</li>
+<li>4 = Insert text at current point (target has text to add)</li>
+<li>5 = Open listed documents (target has documents listed)</li>
+<li>6 = Alert box (target has text)</li>
+<li>7 = Textybox + Yes, No, Cancel (target has text, Msg any default value)</li>
+</ul><br />See %Studio.Extension.Base for full description]]></Description>
+<FormalSpec><![CDATA[Type:%Integer,Name:%String,InternalName:%String,SelectedText:%String,&Action:%String,&Target:%String,&Msg:%String,&Reload:%Boolean]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set tMenu=$P(Name, ",", 1)
+	set tItem=""
+	set:Type=0 tItem=$ZSTRIP($P(Name, ",", 2), "*W")
+	set:Type=1 tItem=$S(Name=0:"LockedDoc", Name=1:"NewDoc", Name=2:"DelDoc", Name=3:"OpenDoc", Name=4:"ClosedDoc", Name=5:"NewNS", Name=6:"ImportCSV", 1:"Unknown")
+	write:..Debug>Type !,$P($ZTS, ",", 2),": Handling Menu "_Type_":"_tMenu_":"_tItem_":"_InternalName_"="_tMenu
+	
+	if tItem="LockedDoc" {
+		if ..ForwardEdit { set Action=0 }
+		else {
+			set Action=6
+			set Target="There appears to be no active feature, please start a feature branch before changing the code"
+		}
+	}
+	elseif tItem="Project" {
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.Project.cls?Project="_..ProjectName }
+	}
+	elseif tItem="Fetch" {		
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.Fetch.cls?Project="_..ProjectName }
+	}
+	elseif tItem="Package" {		
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.Package.cls?Project="_..ProjectName }
+	}
+	elseif tItem="Settings" {
+		set Action=2  
+		set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.Settings.cls?Project="_..ProjectName
+	}
+	elseif tItem="StartFeature" {
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		elseif ..Feature'="" { set Action=6  set Target="You are already developing a feature ["_..Feature_"], you must end this first" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.StartFeature.cls?Project="_..ProjectName }
+	}
+	elseif tItem="Export" {
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		elseif ..Feature="" { set Action=6  set Target="You do not appear to be developing a feature, start one off first" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.ExportSource.cls?Project="_..ProjectName }
+	}
+	elseif tItem="EndFeature" {			
+		if ..System="" { set Action=6  set Target="You do not appear to be currently working in an active CFDSource project/repo" }
+		elseif ..Feature="" { set Action=6  set Target="You do not appear to be developing a feature, start one off first" }
+		else { set Action=2  set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.EndFeature.cls?Project="_..ProjectName }
+	}
+	elseif tItem="ImportSystem" {
+		set Action=2
+		set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.ImportProject.cls?Project="_..ProjectName
+	}
+	elseif tItem="CreateSystem" {
+		if $IsObject(..System) { set Action=6  set Target="You appear to be currently working in an active CFDSource project/repo" }
+		set Action=2
+		set Target=$system.CSP.GetDefaultApp($NAMESPACE)_"/CFDSource.UI.NewProject.cls?Project="_..ProjectName
+	}
+	
+	else {
+		set Action=0
+	}
+	
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="AfterUserAction">
+<Description>
+Called after any action actually ran.
+In our case the UI does everything so nothing is needed!</Description>
+<FormalSpec><![CDATA[Type:%Integer,Name:%String,InternalName:%String,Answer:%Integer,Msg:%String="",&Reload:%Boolean]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set tMenu=$P(Name, ",", 1)
+	set tItem=""
+	set:Type=0 tItem=$ZSTRIP($P(Name, ",", 2), "*W")
+	set:Type=1 tItem=$S(Name=0:"LockedDoc", Name=1:"NewDoc", Name=2:"DelDoc", Name=3:"OpenDoc", Name=4:"ClosedDoc", Name=5:"NewNS", Name=6:"ImportCSV", 1:"Unknown")
+	
+	// Might have changed the branch
+	if (Type=0)&&($IsObject(..System)) {
+		set branch=..System.GetCurrentFeature()
+		write:(branch'=..Feature)&&(..Debug>0) !,$P($ZTS, ",", 2),": *** Now on branch [",$S(..Feature="":"develop", 1:..Feature),"]"
+		set ..Feature=branch
+	}
+	
+	// Might have created the current project as a CFD project
+	if (Type=0)&&('$IsObject(..System))&&(##class(CFDSource.System).Exists(..ProjectName)) {
+		set ..System=##class(CFDSource.System).%New(..ProjectName)
+		set ..Feature=..System.GetCurrentFeature()
+		write:..Debug>0 !,$P($ZTS, ",", 2),": *** Opened Project, Studio in sync with ",..System.Name,"-",..System.Version," on branch [",$S(..Feature="":"develop", 1:..Feature),"]"
+	}
+	
+	Set Reload=0
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="GetStatus">
+<Description>
+Return information about this entity.</Description>
+<FormalSpec><![CDATA[InternalName:%String,&IsInSourceControl:%Boolean,&Editable:%Boolean,&IsCheckedOut:%Boolean,&UserCheckedOut:%String]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	Set Editable=1,IsCheckedOut=0,UserCheckedOut="",IsInSourceControl=0
+	quit:'$IsObject(..System) $$$OK
+	
+	set type=..ItemType(InternalName)
+	quit:type="Project" $$$OK
+	
+	set coreName=$P(InternalName, ".", 1, ($L(InternalName, ".")-1))
+	set ext=$ZCVT($P(InternalName,".",$L(InternalName, ".")), "L")
+	
+	if ##class(CFDSource.Util.ProjectItemsUtil).IsInProject(..ProjectName, coreName_"."_ext, 1) {
+		set IsInSourceControl=1
+		set Editable=..Feature'=""
+		
+		// Get out of Jail Free
+		if ('Editable)&&(..ForwardEdit) {
+			set Editable=1
+			write:..Debug>1 !,$P($ZTS, ",", 2),": *** Forward Edit on, disabling status check. ",InternalName," is editable as a result"
+		}
+	}
+	else {
+		write:..Debug>1 !,$P($ZTS, ",", 2),": *** Non project item opened: ",InternalName
+	}
+		
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="OnBeforeLoad">
+<Description>
+This is called before the actual load of data to give the chance
+to load the item from an external format.</Description>
+<FormalSpec>InternalName:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set type=..ItemType(InternalName)
+	set coreName=$P(InternalName, ".", 1, ($L(InternalName, ".")-1))
+	
+	// Open Project
+	if type="project" {
+		set ..ProjectName=coreName
+		if ##class(CFDSource.System).Exists(coreName) {
+			set ..System=##class(CFDSource.System).%New(coreName)
+			set ..Feature=..System.GetCurrentFeature()
+			write:..Debug>0 !,$P($ZTS, ",", 2),": *** Opened Project, Studio in sync with ",..System.Name,"-",..System.Version," on branch [",$S(..Feature="":"develop", 1:..Feature),"]"
+		}
+		else {
+			write:..Debug>0 !,$P($ZTS, ",", 2),": !!! The opened project does not have a CFDSource.System present, not using Source Control tie in for project: ",coreName
+		}
+	}
+	
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="ItemType">
+<Description>
+helper function to determine project item type</Description>
+<FormalSpec>InternalName:%String</FormalSpec>
+<Private>1</Private>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	if $zcvt(InternalName,"U")[".CLS" quit "class"
+	if $zcvt(InternalName,"U")[".CSP" quit "csp"
+	if $zcvt(InternalName,"U")[".CSR" quit "csp"
+	if $zcvt(InternalName,"U")[".PRJ" quit "project"
+	if $zcvt(InternalName,"U")[".INC" quit "routine"
+	if $zcvt(InternalName,"U")[".MAC" quit "routine"
+	if $zcvt(InternalName,"U")[".BAS" quit "routine"
+	if $zcvt(InternalName,"U")[".MVB" quit "routine"
+	if $zcvt(InternalName,"U")[".INT" quit "internal"
+	if $zcvt(InternalName,"U")[".MVI" quit "internal"
+	if $zcvt(InternalName,"U")[".PKG" quit "package"
+	quit "other"
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.System">
+<Description><![CDATA[
+This class represents some system/project for which we are managing source.
+The idea is that the source is held in an external file based repository. We
+load up the project, work with it in cache and then export out our changes
+when they work. Once we've completed a whole feature (which might be several
+local exports/commits) we then merge the changes and push back to a remote
+repository for everyone to see.
+
+We link to the Studio Project to determine what is in/not in the system/project.
+There is a TestPrefix property to specify a prefix to any artefact in the
+project that will be treated as test.
+
+The file system will look like:
+<ul><li>{root}/.cacheproject = Description of the system (this class in effect!)</li>
+<li>{root}/src/main/cache = All classes and code</li>
+<li>{root}/src/main/resources = All {CSP} files and resources</li>
+<li>{root}/src/main/data = Any static data globals</li>
+<li>{root}/src/test/cache = All test classes and code</li>
+<li>{root}/src/test/resources = All test {CSP} files and resources</li>
+<li>{root}/src/test/data = Any static test data globals</li>
+</ul>
+
+Behaviour of this class can be governed by Globals in the namespace:
+<ul><li>^CFDSource("SourceControlClass") = Package.Class extending CFDSource.SourceControl</li>
+<li>^CFDSource("Projects", {System}, "WorkDir") = Working directory for {System}</li>
+<li>^CFDSource("RootWorkDir") = Default working directory (c:\Dev\Source\ or /opt/dev/ if not set)</li>
+<li>^CFDSource("Debug") = The debug level to use (principally applies to Studio Plugin)</li>
+<li>^CFDSource("GITHubSSLConfig") = SSL Config used to talk to github (if at all)</li>
+<li>^CFDSource("ForwardEdit") = If on allows changes to be made outside of a feature</li>
+<li>^CFDSource("Trace") = Level to trace at by default (1, 2 or 3). 2 is the default if balnk</li>
+</ul>
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license]]></Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>%RegisteredObject</Super>
+<TimeChanged>63039,8512.877117</TimeChanged>
+<TimeCreated>62659,54308.132568</TimeCreated>
+
+<Property name="Name">
+<Description>
+The systems name. This is used in creating the path for the working area
+It should match the name of a project in the current namespace, although this
+class holds the master list of packages/code/data inside the project
+Recommended that this should not have spaces in it.</Description>
+<Type>%String</Type>
+<Required>1</Required>
+</Property>
+
+<Property name="Location">
+<Description>
+The base location for the system (will include trailing / or \)</Description>
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="GroupId">
+<Description>
+The group this project belongs to (used to ensure Name is unique)</Description>
+<Type>%String</Type>
+<Required>1</Required>
+</Property>
+
+<Property name="Version">
+<Description>
+The version currently working on
+(Note: not really a cast iron version, more what the current branch thinks the next version is going to be)</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Brief">
+<Description>
+A shortish one liner description of the project/system (optional)</Description>
+<Type>%String</Type>
+<Parameter name="MAXLEN" value="200"/>
+</Property>
+
+<Property name="TestPrefix">
+<Description><![CDATA[
+A prefix (or list of prefixes) given to test artefacts (classes & resources)]]></Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Installer">
+<Description>
+If present the specific class that is the installer (usually a %Installer)
+This class must have a class method called setup that is typically run from the %SYS namespace.
+Note: This is not exported as source, it is assumed to be a class in a package that is exported</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Data">
+<Description>
+Holds the Globals to export as static data for the project
+Where Data holds the name as the key, and the global and subscript
+as the value (Data[Name]="^Global{("Subscript")})</Description>
+<Type>%String</Type>
+<Collection>array</Collection>
+</Property>
+
+<Property name="TestData">
+<Description>
+The names of any test globals to export
+See Data for more information</Description>
+<Type>%String</Type>
+<Collection>array</Collection>
+</Property>
+
+<Property name="SourceControlPlugin">
+<Description>
+The source control plugin to use, default is git. Overridden during construction</Description>
+<Type>CFDSource.SourceControl</Type>
+</Property>
+
+<Method name="%OnNew">
+<Description>
+Overridden so we sync with the project on disc if it exists</Description>
+<FormalSpec>initvalue:%CacheString</FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<ServerOnly>1</ServerOnly>
+<Implementation><![CDATA[
+	quit:$G(initvalue)="" $$$ERROR("System name must be provided in %New()")
+	
+	set ..Name=$ZSTRIP(initvalue, "*PCW")
+	set ..SourceControlPlugin=$CLASSMETHOD($G(^CFDSource("SourceControlClass"), "CFDSource.GIT.SourceControl"), "%New")
+	quit:..Exists(..Name) ##class(CFDSource.Util.ImportExport).ReadProject($this, ##class(CFDSource.Util.Trace).%New())
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="LocationGet">
+<Description>
+This accessor calculates the project external location for the system</Description>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..ProjectLocation(..Name)
+]]></Implementation>
+</Method>
+
+<Method name="ProjectLocation">
+<Description>
+Returns a projects working directory. 
+Note: There will be a trailing / or \ at the end of the path</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pName:%String</FormalSpec>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	// a. See if project has custom working directory
+	quit:$G(pName)'=""&&($D(^CFDSource("Projects", pName, "WorkDir"))=1) ^CFDSource("Projects", pName, "WorkDir")
+	
+	// b. Otherwise form from root location
+	set root=$G(^CFDSource("RootWorkDir"))
+	set:root="" root=$system.Util.InstallDirectory()_"Workspaces"
+	
+	set sep=$S($$$ISWINDOWS:"\", 1:"/")
+	quit root_sep_$namespace_sep_$S($G(pName)="":"", 1:pName_sep)
+]]></Implementation>
+</Method>
+
+<Method name="Exists">
+<Description>
+This method quickly determines if the project exists as a CFDSource project
+If it does not exist, create it as per below</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pName:%String</FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set fileName=..ProjectLocation(pName)_".cacheproject"
+	quit ##class(%File).Exists(fileName)
+]]></Implementation>
+</Method>
+
+<Method name="Reload">
+<Description>
+Reloads the project settings</Description>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	quit:..Exists(..Name) ##class(CFDSource.Util.ImportExport).ReadProject($this, ##class(CFDSource.Util.Trace).%New())
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="Save">
+<Description>
+Saves the project settings (and only the project settings)</Description>
+<FormalSpec><![CDATA[&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Checking Status ...")
+	do ..SourceControlPlugin.GetStatus($this, .branch, pTrace)
+	quit:$G(branch)="" pTrace.SetError($$$ERROR("Project not in a feature, cannot export"))
+	
+	do pTrace.AddStep("Exporting Project ...")
+	set ret=##class(CFDSource.Util.ImportExport).WriteProject($this, pTrace)  quit:$$$ISERR(ret) ret
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="GetCurrentFeature">
+<Description>
+Call to get current feature branch, if empty string then we are not in any feature</Description>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	quit:'..Exists(..Name) ""
+	
+	set pTrace=##class(CFDSource.Util.Trace).%New()
+	do ..SourceControlPlugin.GetStatus($this, .branch, pTrace)
+	quit:$G(branch)="develop" ""
+	quit $G(branch)
+]]></Implementation>
+</Method>
+
+<Method name="StartFeature">
+<Description>
+Call to start a new development feature</Description>
+<FormalSpec><![CDATA[pFeature:%String,pPull:%Boolean=1,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Starting new feature")
+	set ret=..SourceControlPlugin.StartFeature($this, pFeature, pPull, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Import in all the source")
+	set ret=##class(CFDSource.Util.ImportExport).ImportProject($this, .importItems, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="SwitchFeature">
+<Description>
+Call to switch to a different development feature. This will of course
+undo any local changes since the last commit</Description>
+<FormalSpec><![CDATA[pFeature:%String,pPull:%Boolean=1,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Switching to exist feature")
+	set ret=..SourceControlPlugin.SwitchFeature($this, pFeature, pPull, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Import in all the source")
+	set ret=##class(CFDSource.Util.ImportExport).ImportProject($this, .importItems, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="EndFeature">
+<Description><![CDATA[
+Call to end the current development feature and merge back into develop branch
+An export is done first & commit if required]]></Description>
+<FormalSpec><![CDATA[pFinalComment:%String,pPush:%Boolean=1,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Exporting Source")
+	set ret=##class(CFDSource.Util.ImportExport).ExportProject($this,,pTrace)  
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Commit")
+	set:pFinalComment="" pFinalComment="Automated end feature commit: "_$ZDT($H, 4)
+	set ret=..SourceControlPlugin.Commit($this, pFinalComment, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("End the feature")
+	set ret=..SourceControlPlugin.EndFeature($this, pPush, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="Package">
+<Description>
+Exports the system as a package to be installed in another system</Description>
+<FormalSpec><![CDATA[pFinal:%Boolean=0,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	do pTrace.AddStep("Package")
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	set ret=##class(CFDSource.Util.Package).ExportPackage($this, pFinal, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="Export">
+<Description>
+Exports and commits the project</Description>
+<FormalSpec><![CDATA[pCommitMessage:%String,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Checking Status ...")
+	do ..SourceControlPlugin.GetStatus($this, .branch, pTrace)
+	quit:$G(branch)="" pTrace.SetError($$$ERROR("Project not in a feature, cannot export"))
+	
+	do pTrace.AddStep("Exporting Project ...")
+	set ret=##class(CFDSource.Util.ImportExport).ExportProject($this,,pTrace)  quit:$$$ISERR(ret) ret
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Committing ...")
+	set:pCommitMessage="" pCommitMessage="Automated checkpoint commit: "_$ZDT($H, 4)
+	set ret=..SourceControlPlugin.Commit($this, pCommitMessage, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="Import">
+<Description>
+Imports the source from the local repository and optionally pulls
+it from a remote source. This overwrites any changes inside the namespace
+since last exported/committed</Description>
+<FormalSpec><![CDATA[pPull:%Boolean=0,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	if pPull {
+		do pTrace.AddStep("Pulling in source")
+		set ret=..SourceControlPlugin.Pull($this, pTrace)
+		quit:$$$ISERR(ret) pTrace.SetError(ret)
+	}
+	
+	do pTrace.AddStep("Importing in Project")
+	set ret=##class(CFDSource.Util.ImportExport).ImportProject($this, .importItems, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="Initialise">
+<Description>
+This method will initialise the project, setup the local source control for it
+and optionally connect to a remote repository (pRepoUrl).
+Note: The remote repository is not created as part of this operation.</Description>
+<FormalSpec><![CDATA[pRepoUrl:%String,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Exporting Project ...")
+	set ret=##class(CFDSource.Util.ImportExport).ExportProject($this,,pTrace)  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Starting Source Project ...")
+	set ret=..SourceControlPlugin.CreateProject($this, pRepoUrl, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="Clone">
+<Description>
+This method will attempt to clone a remote repository to setup the local 
+repository for this system. Once complete it will then import in all the
+source and setup the %Studio.Project</Description>
+<FormalSpec><![CDATA[pRepoUrl:%String,&pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set:'$IsObject($G(pTrace)) pTrace=##class(CFDSource.Util.Trace).%New()
+	
+	do pTrace.AddStep("Cloning Project ...")
+	set ret=..SourceControlPlugin.ImportProject($this, pRepoUrl, pTrace)  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pTrace.AddStep("Importing Project ...")
+	set ret=##class(CFDSource.Util.ImportExport).ImportProject($this, .importItems, pTrace)
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	quit ret
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Tasks.ExportTask">
+<Description>
+This class is a task that can be setup to automatically export the source code
+for a project. This can be useful to, for instance, ensure we checkin nightly
+any development work. The checkin is only done locally and then only to
+the feature branch so does not effect everyone/everything. Useful if other
+developers have branched off our local repo.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%SYS.Task.Definition</Super>
+<TimeChanged>63038,60787.482415</TimeChanged>
+<TimeCreated>62555,72858.025913</TimeCreated>
+
+<Property name="Systems">
+<Description>
+The name of the systems to export in this namespace (comma delimitted)</Description>
+<Type>%String</Type>
+</Property>
+
+<Method name="OnTask">
+<Description>
+This export any software that is out of date</Description>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set sc=$$$OK
+	for i=1:1:$L(..Systems, ",") { set sc=..SourceExport($P(..Systems, ",", i))  quit:$$$ISERR(sc) }
+	quit sc
+]]></Implementation>
+</Method>
+
+<Method name="SourceExport">
+<Description>
+Actual method to export a particular system.
+Can be used outside the task if useful</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>system:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set sys=##class(CFDSource.System).%OpenId(system)
+	quit:'$IsObject(sys) $$$ERROR("Cannot find system to update source for: "_system)
+	
+	quit sys.ExportSource(,"Regular checkin: "_$ZDT($H, 3, 3))
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Tasks.UpdateTask">
+<Description>
+This class is a task that can be setup to automatically sync a project to
+the latest on a regular basis. Note: It does not update the current branch so
+is relatively safe even if working on things.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%SYS.Task.Definition</Super>
+<TimeChanged>63038,60790.81479</TimeChanged>
+<TimeCreated>62555,72858.025913</TimeCreated>
+
+<Property name="Systems">
+<Description>
+The name of the systems to update in this namespace (comma delimitted)</Description>
+<Type>%String</Type>
+</Property>
+
+<Method name="OnTask">
+<Description>
+This installs/updates any software that is out of date</Description>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set sc=$$$OK
+	for i=1:1:$L(..Systems, ",") { set sc=..SourceUpdate($P(..Systems, ",", i))  quit:$$$ISERR(sc) }
+	quit sc
+]]></Implementation>
+</Method>
+
+<Method name="SourceUpdate">
+<Description>
+Actual method to update a particular system.
+Can be used outside the task if useful</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>system:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set sys=##class(CFDSource.System).%OpenId(system)
+	quit:'$IsObject(sys) $$$ERROR("Cannot find system to update source for: "_system)
+	
+	// Does a fetch from origin and then imports current branch (develop)
+	quit sys.ImportSource(1)
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.App">
+<Description>
+The ZEN application for the source control plugin
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%ZEN.application</Super>
+<TimeChanged>63038,60735.429028</TimeChanged>
+<TimeCreated>62659,73377.175208</TimeCreated>
+
+<Parameter name="APPLICATIONNAME">
+<Description>
+This is the name of this application.</Description>
+<Default>SourceApp</Default>
+</Parameter>
+
+<Parameter name="HOMEPAGE">
+<Description>
+This is the URL of the main starting page of this application.</Description>
+</Parameter>
+
+<XData name="Style">
+<Description>
+This Style block contains application-wide CSS style definitions.</Description>
+<Data><![CDATA[
+<style type="text/css">
+</style>
+]]></Data>
+</XData>
+</Class>
+
+
+<Class name="CFDSource.UI.BaseDialog">
+<Description>
+The base for all our Confidence studio dialog elements
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%ZEN.Template.studioTemplate</Super>
+<TimeChanged>63039,5730.40104</TimeChanged>
+<TimeCreated>62660,5463.138889</TimeCreated>
+
+<Parameter name="APPLICATION">
+<Description>
+Class name of application this page belongs to.</Description>
+<Default>CFDSource.UI.App</Default>
+</Parameter>
+
+<Parameter name="DOMAIN">
+<Description>
+Domain used for localization.</Description>
+<Default>CFD</Default>
+</Parameter>
+
+<Parameter name="PAGENAME">
+<Description>
+Name of all dialogs</Description>
+<Default>CFD</Default>
+</Parameter>
+
+<Property name="System">
+<Description>
+The current system</Description>
+<Type>CFDSource.System</Type>
+<Private>1</Private>
+<Transient>1</Transient>
+</Property>
+
+<Property name="ExistingCode">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ExistingData">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ExistingTestCode">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ExistingTestData">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="GroupId">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Version">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Brief">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="TestPrefix">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Installer">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Feature">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ProjectOpen">
+<Description>
+Returns true if we are in an active feature</Description>
+<Type>%Boolean</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ProjectLocked">
+<Description>
+Returns true if we are not in an active feature</Description>
+<Type>%Boolean</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Method name="GroupIdGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..GetSystem().GroupId
+]]></Implementation>
+</Method>
+
+<Method name="VersionGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..GetSystem().Version
+]]></Implementation>
+</Method>
+
+<Method name="BriefGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..GetSystem().Brief
+]]></Implementation>
+</Method>
+
+<Method name="TestPrefixGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..GetSystem().TestPrefix
+]]></Implementation>
+</Method>
+
+<Method name="InstallerGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit ..GetSystem().Installer
+]]></Implementation>
+</Method>
+
+<Method name="FeatureGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	set feature=..GetSystem().GetCurrentFeature()
+	quit $S(feature'="":feature, 1:"<None>")
+]]></Implementation>
+</Method>
+
+<Method name="ProjectOpen">
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set feature=..GetSystem().GetCurrentFeature()
+	quit feature'=""
+]]></Implementation>
+</Method>
+
+<Method name="ProjectLockedGet">
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set feature=..GetSystem().GetCurrentFeature()
+	quit feature=""
+]]></Implementation>
+</Method>
+
+<XData name="Style">
+<Description>
+This Style block contains page-specific CSS style definitions.</Description>
+<Data><![CDATA[
+<style type="text/css">
+div.dialog {
+	padding: 10px;
+	font-size: 0.9em;
+}
+
+.title {
+	font-size: 1.5em;
+	font-weight: bold;
+	font-style: italic;
+	border-bottom: thin ridge;
+	padding-bottom: 5px;
+	margin-bottom: 10px;
+}
+
+div.description {
+	margin-bottom: 10px;
+}
+
+div.frm div.notes {
+	margin-left: 8em;
+	background-color: white;
+	border: thin ridge gray;
+	font-size: 0.91em;
+}
+
+div.frm div.inlinenotes {
+	margin: 3px;
+	padding: 3px;
+	background-color: #F8F8F8;
+	border: thin ridge grey;
+	font-size: 0.8em;
+	color: #000099;
+}
+
+/* Needed to ensure all line up */
+div.frm input.text {
+	
+}
+
+/* Needed to ensure all line up */
+div.frm textarea {
+	
+}
+
+/* Ensure the labels and fields don't wrap */
+div.frm td {
+	white-space: nowrap;
+}
+
+div.frm span.zenLabel {
+	display: inline-block;
+	width: 8em;
+	text-align: right;
+	vertical-align: top;
+	font-size: 0.9em;
+	font-weight: bold;
+	color: gray;
+	margin-left: 5px;
+	margin-right: 8px;
+}
+
+div.frm div.fld {
+	display: inline;
+}
+
+div.frm div#syncMode.fld {
+	display: inline-block ! important;
+	width: 300px;
+}
+
+div.frm div.roFld input  {
+	background-color: #F0F0F0;
+	font-style: italic;
+}
+
+div.frm div.actions {
+	margin-top: 10px;
+	padding-left: 8em;
+}
+
+div.debug {
+	margin-top: 50px;
+	border-top: thin ridge;
+	padding-top: 10px;
+}
+
+div.tabset {
+	margin-left: 8em;
+	padding-left: 23px;
+	margin-top: 5px;
+	margin-bottom: 5px;
+	font-size: 0.9em;
+	width: 550px;
+}
+
+div.tabset div {
+	background-color: #E0E0E0;
+}
+
+div.listBox {
+	width: auto;
+	background-color: white ! important;
+}
+
+div.tabset div.tabGroupBody {
+	min-height: 100px;
+}
+
+</style>
+]]></Data>
+</XData>
+
+<XData name="Contents">
+<Description>
+Overridden Contents</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<page xmlns="http://www.intersystems.com/zen" >
+<html id="header" OnDrawContent="%DrawTitle" />
+<form id="templateForm" groupStyle=""
+onvalidate="return zenPage.formValidationHandler();">
+<hidden id="templateFinal" name="$FINAL" value="0" />
+<pane paneName="templateBody" id="body"/>
+</form>
+<hgroup id="footer" width="100%" cellAlign="right">
+<hgroup id="buttonHolder" cellAlign="right">
+<button id="btnSource" controlClass="commandButton" caption="Source" onclick="zenPage.showSource();" hidden="#(%page.GetSourceHidden())#"/>
+<spacer width="15" />
+<button id="btnBack" controlClass="commandButton" caption="Back" onclick="zenPage.previousPage();" hidden="true"/>
+<spacer width="5" />
+<button id="btnNext" controlClass="commandButton" caption="Next" onclick="zenPage.nextPage();" hidden="true"/>
+<spacer width="15" />
+<button id="btnFinish" controlClass="commandButton" caption="Finish" onclick="zenPage.finishTemplate();" />
+<spacer width="5" />
+<button id="btnCancel" controlClass="commandButton" caption="Cancel" onclick="zenPage.cancelTemplate();" />
+<spacer width="15" />
+<button id="btnHelp" controlClass="commandButton" caption="Help" onclick="zenPage.showHelp();" />
+<spacer width="10" />
+</hgroup>
+</hgroup>
+</page>
+]]></Data>
+</XData>
+
+<XData name="CodeAndDataPane">
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane>
+<tabGroup id="codeAndData" showTabBar="true" width="500px" height="180px" enclosingClass="tabset" >
+<tab caption="Data" width="100%">
+<hgroup>
+<text id="dataglobal" name="DataGlobal" size="30" />
+<html>=</html>
+<text id="dataname" name="DataGlobalName" size="20" />
+</hgroup>
+<html enclosingClass="inlinenotes">i.e. GlobalD[("Subscript")]={Name}</html>
+<hgroup>
+<button name="AddData" caption="Add" onclick="zenPage.onAddToData('data')" />
+<button name="RemData" caption="Remove" onclick="zenPage.onRemoveFromCode('data')" />
+<button name="ResetData" caption="Clear" onclick="zenPage.onClearCode('data')" />
+</hgroup>
+<listBox id="data" name="DataL" width="100%" />
+<hidden id="datah" name="Data" value="#(%page.ExistingData)#" />
+<hidden id="dataho" name="DataO" value="#(%page.ExistingData)#" />
+</tab>
+<tab caption="TestData" width="100%">
+<hgroup>
+<text id="testdataglobal" name="testdataGlobal" size="30" />
+<html>=</html>
+<text id="testdataname" name="testdataGlobalName" size="20" />
+</hgroup>
+<html enclosingClass="inlinenotes">i.e. GlobalD[("Subscript")]={Name}</html>
+<hgroup>
+<button name="AddTestData" caption="Add" onclick="zenPage.onAddToData('testdata')" />
+<button name="RemTestData" caption="Remove" onclick="zenPage.onRemoveFromCode('testdata')" />
+<button name="ResetTestData" caption="Clear" onclick="zenPage.onClearCode('testdata')" />
+</hgroup>
+<listBox id="testdata" name="TestDataL" width="100%" />
+<hidden id="testdatah" name="TestData" value="#(%page.ExistingTestData)#" />
+<hidden id="testdataho" name="TestDataO" value="#(%page.ExistingTestData)#" />
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="GetSourceHidden">
+<Description>
+Called to set state of source button</Description>
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	quit:$G(^CFD.Studio.Debug, 0)>2 0
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="GetSystem">
+<Description>
+Helper method to get the system, this will set it if not set already
+Only gets the system if it does not exist - does not return a system that does not yet exist!</Description>
+<ReturnType>CFDSource.System</ReturnType>
+<Implementation><![CDATA[
+	quit:..Project="" ""
+	
+	if '$IsObject(..System) { 
+		set ..System=""
+		set:##class(CFDSource.System).Exists(..Project) ..System=##class(CFDSource.System).%New(..Project) 
+	}
+	elseif ..System.Name'=..Project { 
+		set ..System=""
+		set:##class(CFDSource.System).Exists(..Project) ..System=##class(CFDSource.System).%New(..Project) 
+	}
+	
+	quit ..System
+]]></Implementation>
+</Method>
+
+<Method name="onstartHandler">
+<Description>
+This is called when the template is first displayed;
+This provides a chance to set focus etc.</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	for( j=0 ; j < 4 ; j++ ) {
+		var lstId="code";
+		if( j==1 ) { lstId = "data"; }
+		if( j==2 ) { lstId = "testcode"; }
+		if( j==3 ) { lstId = "testdata"; }
+		var hidId=lstId+"h";
+		
+		var lst=this.getComponentById(lstId);
+		if( (lst != null) && (lst.getOptionCount() == 0) ) {
+			var hid=this.getComponentById(hidId);
+			if( (hid != null) && (hid.getValue() != "") ) {
+				var items=hid.getValue().split(",");
+				for( i = 0 ; i < items.length ; i++ ) {
+					lst.appendOption(items[i]);
+				}
+			}
+		}
+	}
+]]></Implementation>
+</Method>
+
+<Method name="onfinishHandler">
+<Description>
+This is called when the template is finished;</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[	return true;
+]]></Implementation>
+</Method>
+
+<Method name="showSource">
+<Description>
+When CFD in debug mode, shows to display the source of the window (for debugging CFD itself!)</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var popup=window.open();
+	popup.document.open('text/plain').write(document.documentElement.outerHTML)
+]]></Implementation>
+</Method>
+
+<Method name="%DrawTitle">
+<Description>
+Provide HTML for standard template html title box.
+Overridden to use page name in dialog</Description>
+<FormalSpec>pSeed:%String</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	#; draw html title box
+	Set tName = ..#PAGENAME
+	Set tTitle = ..#TEMPLATETITLE
+	Set tUserName = $$$Text("User","%ZEN")
+	Set tNamespace = $$$Text("Namespace","%ZEN")
+
+	&html<<table class="stdTitle" border="0" cellpadding="0" cellspacing="0" width="100%">
+		<tr>
+		<td align="left" width="58"><img width="58" height="58" src="#(..Link("portal/icon_sysexplore.png"))#"/></td>
+		<td align="left" width="90%" style="padding-left:20px;">
+		<div style="font-size: 0.6em;">#(tName)#</div>
+		<div>#(tTitle)#</div></td>
+		<td valign="top">&nbsp;
+		<table class="stdTitleInfo" border="0" cellpadding="0" cellspacing="2">
+		<tr><th>#(tUserName)#:</th><th>#($UserName)#</th></tr>
+		<tr><th>#(tNamespace)#:</th><th>#($ZU(5))#</th></tr>
+		</table>
+		</td>
+		</tr></table>>
+	Quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="OutputConsole">
+<Description>
+This method outputs to the output console in the diagram, both a
+general indication of success/failure and any lines in the output</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pStatus:%Status,pTask:%String,pOutput:%Stream.Object</FormalSpec>
+<Implementation><![CDATA[
+	if $$$ISERR(pStatus) {
+		set err=$system.Status.GetErrorText(pStatus)
+		
+		&js<var ta=zenPage.getComponentById('output');>
+		&js<ta.setValue("Failed to #(pTask)# ...");>
+		&js<ta.setValue(ta.getValue()+"\n"+"Status: #(err)#");>
+	}
+	else {
+		&js<var ta=zenPage.getComponentById('output');>
+		&js<ta.setValue("#(pTask)# succeded ...");>
+	}
+	
+	set rows=2
+	if $D(pOutput)&&$IsObject(pOutput) {
+		set i=1
+		do pOutput.Rewind()
+		while 'pOutput.AtEnd {
+			set ln=pOutput.ReadLine()
+			set i=$I(i)
+			quit:i>100
+			continue:ln=""
+			
+			//set ln=$TR(ln, "\", "/")
+			//set ln=$TR(ln, "'", """")
+			set ln=$ZCVT(ln, "O", "JS")
+			&js<ta.setValue(ta.getValue()+"\n"+'#(ln)#');>
+			set rows=$I(rows)
+		}
+	}
+	
+	//if rows>5 { &js<ta.setProperty("rows", "#(rows)#");> }
+	&js<ta.setHidden(false);>
+]]></Implementation>
+</Method>
+
+<Method name="ExistingCodeGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	set ret=""
+	set sys=..GetSystem()
+	quit:'$IsObject(sys) ret
+	
+	for i=1:1:sys.Code.Count() {
+		set ret=ret_$S(ret="":"", 1:",")_sys.Code.GetAt(i)
+	}
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ExistingDataGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	set ret=""
+	set sys=..GetSystem()
+	quit:'$IsObject(sys) ret
+	
+	do {
+		set v=sys.Data.GetNext(.k)
+		quit:k=""
+		
+		set ret=ret_$S(ret="":"", 1:",")_k_"="_v
+	} while k'=""
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ExistingTestCodeGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	set ret=""
+	set sys=..GetSystem()
+	quit:'$IsObject(sys) ret
+	
+	for i=1:1:sys.TestCode.Count() {
+		set ret=ret_$S(ret="":"", 1:",")_sys.TestCode.GetAt(i)
+	}
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ExistingTestDataGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	set ret=""
+	set sys=..GetSystem()
+	quit:'$IsObject(sys) ret
+	
+	do {
+		set v=sys.TestData.GetNext(.k)
+		quit:k=""
+		
+		set ret=ret_$S(ret="":"", 1:",")_k_"="_v
+	} while k'=""
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="onCodePackageType">
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var type=this.getComponentById(name+"PackageType").getValue();
+	
+	this.getComponentById(name+"tlPackages").setHidden(type != "TLP");
+	this.getComponentById(name+"allPackages").setHidden(type != "All");
+	this.getComponentById(name+"allClasses").setHidden(type != "Code");
+]]></Implementation>
+</Method>
+
+<Method name="onAddToCode">
+<FormalSpec>name</FormalSpec>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var type=this.getComponentById(name+"PackageType").getValue();
+	var sel=""
+	
+	if( type == "TLP" ) { sel=this.getComponentById(name+"tlPackages").getValue()+".pkg"; }
+	else if( type == "All" ) { sel=this.getComponentById(name+"allPackages").getValue()+".pkg"; }
+	else { sel = sel=this.getComponentById(name+"allClasses").getValue()+".cls"; }
+	
+	// Add if not already present
+	var found=false;
+	var lst=this.getComponentById(name);
+	for( i=0 ; (i<lst.getOptionCount())&&(!found) ; i++ ) {
+		if( lst.getOptionValue(i)==sel ) found=true;
+	}
+	if( !found ) {
+		lst.appendOption(sel);
+		
+		var hid=this.getComponentById(name+"h");
+		if( hid.getValue() != "" ) hid.setValue(hid.getValue()+","+sel)
+		else hid.setValue(sel)
+	}
+]]></Implementation>
+</Method>
+
+<Method name="onAddToData">
+<FormalSpec>name</FormalSpec>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var global=this.getComponentById(name+"global").getValue();
+	var index=this.getComponentById(name+"name").getValue();
+	var sel=index+"="+global
+	
+	// Add if not already present
+	var found=false;
+	var lst=this.getComponentById(name);
+	for( i=0 ; (i<lst.getOptionCount())&&(!found) ; i++ ) {
+		if( lst.getOptionValue(i)==sel ) found=true;
+	}
+	if( !found ) {
+		lst.appendOption(sel);
+		
+		var hid=this.getComponentById(name+"h");
+		if( hid.getValue() != "" ) hid.setValue(hid.getValue()+","+sel)
+		else hid.setValue(sel)
+	}
+]]></Implementation>
+</Method>
+
+<Method name="onRemoveFromCode">
+<FormalSpec>name</FormalSpec>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var lst=this.getComponentById(name);
+	lst.removeOption(lst.selectedIndex);
+	
+	// Not greatest efficiency, but it should work!
+	var hid=this.getComponentById(name+"h");
+	hid.setValue("");
+	for( i=0 ; (i<lst.getOptionCount())&&(!found) ; i++ ) {
+		if( hid.getValue() != "" ) hid.setValue(hid.getValue()+","+lst.getOptionValue(i))
+		else hid.setValue(lst.getOptionValue(i))
+	}
+]]></Implementation>
+</Method>
+
+<Method name="onClearCode">
+<FormalSpec>name</FormalSpec>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	this.getComponentById(name).resetOptions();
+	this.getComponentById(name+"h").setValue("");
+]]></Implementation>
+</Method>
+
+<Query name="Packages">
+<Description>
+Query to get top-level packages, all packages or all classes</Description>
+<Type>%Query</Type>
+<FormalSpec>Type:%String</FormalSpec>
+<Parameter name="CONTAINID" value="1"/>
+<Parameter name="ROWSPEC" value="Name:%String"/>
+</Query>
+
+<Method name="PackagesExecute">
+<Description>
+Sets up a process private varable</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[&qHandle:%Binary,Type:%String]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set cls=$O(^oddDEF("%zzz"))
+	while cls'="" {
+		set pkg=$S(Type="3":cls, 1:$P(cls, ".", 1, $S(Type="1":1, 1:($L(cls, ".")-1))))
+		set ^||Packages(pkg)=""
+		set cls=$O(^oddDEF(cls))
+	}
+	
+	set qHandle=$O(^||Packages(""))
+      quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="PackagesFetch">
+<Description>
+Iterates around the process private variable setup in execute</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[&qHandle:%Binary,&Row:%List,&AtEnd:%Integer=0]]></FormalSpec>
+<PlaceAfter>PackagesExecute</PlaceAfter>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set pkg=qHandle
+	
+	if pkg="" {
+		set Row=""
+		set AtEnd=1
+	}
+	else {
+		set Row=$LB(pkg)
+		set AtEnd=0
+		set qHandle=$O(^||Packages(pkg))
+	}
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="PackagesClose">
+<Description>
+Clears down the process private varable</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[&qHandle:%Binary]]></FormalSpec>
+<PlaceAfter>PackagesExecute</PlaceAfter>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	kill ^||Packages
+	quit $$$OK
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.BaseWizard">
+<Description>
+Extends Dialog to add in support for the Wizard type dialogs we use in CFDSource
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>CFDSource.UI.BaseDialog</Super>
+<TimeChanged>63038,60741.240192</TimeChanged>
+<TimeCreated>63036,40736.271552</TimeCreated>
+
+<Method name="%OnMonitorBackgroundTask">
+<Description>
+When running the main process in the background 
+Show any status thus far</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pTaskID:%String,pStatus:%String,pPercentComplete:%Float</FormalSpec>
+<Implementation><![CDATA[
+	set last=$G(^CacheTempUser.CFDSource("Trace", pTaskID, "Last"), "")
+	set k=$O(^CacheTempUser.CFDSource("Trace", pTaskID, last))
+	while k>0 {
+		set ln=$ZCVT(^CacheTempUser.CFDSource("Trace", pTaskID, k), "O", "JS")
+		&js<var ta=zenPage.getComponentById('output'); ta.setValue(ta.getValue()+"\n"+'#(ln)#');>
+		
+		set ^CacheTempUser.CFDSource("Trace", pTaskID, "Last")=k
+		set k=$O(^CacheTempUser.CFDSource("Trace", pTaskID, k))
+	}
+]]></Implementation>
+</Method>
+
+<Method name="%OnFinishBackgroundTask">
+<Description>
+When running the main process in the background 
+Complete the status</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pTaskID:%String</FormalSpec>
+<Implementation><![CDATA[
+	set last=$G(^CacheTempUser.CFDSource("Trace", pTaskID, "Last"), 0)
+	set k=$O(^CacheTempUser.CFDSource("Trace", pTaskID, last))
+	while k>0 {
+		set ln=$ZCVT(^CacheTempUser.CFDSource("Trace", pTaskID, k), "O", "JS")
+		&js<var ta=zenPage.getComponentById('output'); ta.setValue(ta.getValue()+"\n"+'#(ln)#');>
+		
+		set ^CacheTempUser.CFDSource("Trace", pTaskID, "Last")=k
+		set k=$O(^CacheTempUser.CFDSource("Trace", pTaskID, k))
+	}
+	
+	// Finish the task
+	set task=$G(^CacheTempUser.CFDSource("Trace", pTaskID, "Task"))
+	set status=$ZCVT($G(^CacheTempUser.CFDSource("Trace", pTaskID, "Status")), "O", "JS")
+	kill ^CacheTempUser.CFDSource("Trace", pTaskID)
+	&js<window.alert('#(task)# #(status)#');>
+]]></Implementation>
+</Method>
+
+<Method name="onfinishHandler">
+<Description>
+This is called when the template is finished;</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[	return true;
+]]></Implementation>
+</Method>
+
+<Method name="canFinish">
+<Description><![CDATA[
+Return true if this template can Finish (i.e., enable 
+the Finish button).<br>
+This is implemented by subclasses. ]]></Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var tab = zenPage.getComponentById('contents');
+	if( tab.currTab == 1 ) return false;
+	else return true;
+]]></Implementation>
+</Method>
+
+<Method name="canGoBack">
+<Description><![CDATA[
+Return true if this template can go to the previous page (i.e., enable
+the Back button).<br> 
+This is implemented by subclasses.]]></Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var tab = zenPage.getComponentById('contents');
+	if( tab.currTab == 1 ) return false;
+	else return true;
+]]></Implementation>
+</Method>
+
+<Method name="canGoNext">
+<Description><![CDATA[
+Return true if this template can go to the next page (i.e., enable
+the Next button).<br> 
+This is implemented by subclasses.]]></Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var tab = zenPage.getComponentById('contents');
+	if( tab.currTab == 1 ) return true;
+	else return false;
+]]></Implementation>
+</Method>
+
+<Method name="nextPage">
+<Description><![CDATA[
+Go to the next page of the template (if there is one).<br>
+This is implemented by subclasses. ]]></Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	// Clear down
+	var output=zenPage.getComponentById('output');
+	output.setValue("Task has started. An alert will display when completed.\nThis may take some time...\n");
+	
+	// Create and move on
+	if( zenPage.DoStartTask() ) {
+		var tab = zenPage.getComponentById('contents');
+		tab.showTab(2);
+		this.updateState();
+	}
+	
+	return true;
+]]></Implementation>
+</Method>
+
+<Method name="previousPage">
+<Description><![CDATA[
+Go to the previous page of the template (if there is one).<br>
+This is implemented by subclasses. ]]></Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var tab = zenPage.getComponentById('contents');
+	tab.showTab(1);
+	zenPage.updateState();
+	
+	return true;
+]]></Implementation>
+</Method>
+
+<Method name="hasMultiplePages">
+<Description>
+Return true if this template has more than one "page".
+This will display Back and Next buttons. 
+This is implemented by subclasses.</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[	return true;
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.EndFeature">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63039,8952.646022</TimeChanged>
+<TimeCreated>62660,37022.310285</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>End Feature Development</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will end the current feature, merging with the latest development branch and, if connected to a remote, will push the changes</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="branch" name="Branch" value="#(%page.Feature)#" label="Feature:" enclosingClass="fld" size="80" readOnly="true" />
+<text id="msg" name="Msg" value="" label="Commit Message:" enclosingClass="fld" size="80" />
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Zen method to end a feature</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set name=%page.%GetComponentById("name").value
+	
+	set msg=$ZSTRIP(%page.%GetComponentById("msg").value, "<>WCP")
+	if msg="" {
+		&js<window.alert('A commit message is required to end the feature.');>
+		quit 0
+	}
+	
+	if '##class(CFDSource.System).Exists(name) {
+		&js<window.alert('There is a problem as, #(name)# is not a registered CFD System. Cannot end feature.');>
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("EndFeature", name, msg)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="EndFeature">
+<Description>
+Main method to end a feature</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>project:%String,message:%String</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="End Feature"
+	
+	try {
+		set system=##class(CFDSource.System).%New(project)
+		set sc=system.EndFeature(message, 1, .tTrace)
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.ExportSource">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63039,8933.606796</TimeChanged>
+<TimeCreated>62660,44576.778974</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Export Source</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will export the source and commit the changes to your local repository. A push to a remote repository is optional</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="branch" name="Branch" value="#(%page.Feature)#" label="Feature:" enclosingClass="fld" size="80" readOnly="true" />
+<text id="msg" name="Msg" value="" label="Commit Message:" enclosingClass="fld" size="80" />
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Main method to end a feature</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set name=%page.%GetComponentById("name").value
+	
+	set message=$ZSTRIP(%page.%GetComponentById("msg").value, "<>WCP")
+	if message="" {
+		&js<window.alert('You have not entered a commit message. Cannot continue');>
+		quit 0
+	}
+	
+	if '##class(CFDSource.System).Exists(name) {
+		&js<window.alert('There is a problem as, #(name)# is not a registered CFD System. Cannot end feature.');>	
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("ExportSource", name, message)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="ExportSource">
+<Description>
+Main method to end a feature</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>project:%String,message:%String</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="Export Source"
+	
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(project)	
+		set sc=system.Export(message, .tTrace)
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.Fetch">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63038,60750.107663</TimeChanged>
+<TimeCreated>62660,72070.267996</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default><![CDATA[Fetch & Update]]></Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will fetch and import the source from a local or remote repository. You can also use this to switch branches. Note, if you do switch and have uncommited local changes they will be lost!</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="currentBranch" name="CurrentBranch" value="#(%page.Feature)#" label="Feature:" enclosingClass="fld roFld" size="80" readOnly="true" />
+<text id="newBranch" name="NewBranch" value="" label="New Branch:" enclosingClass="fld" size="80" />
+<html enclosingClass="notes">This is optional, but if set the local repositories' working area will be set to this branch before the import</html>
+<checkbox id="pull" name="Pull" value="0" label="Pull Remote?" enclosingClass="fld" />
+<html enclosingClass="notes">This will refresh (pull) from the remote repo the local repository was cloned from</html>
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Zen method to end a feature</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set name=%page.%GetComponentById("name").value
+	set pull=%page.%GetComponentById("pull").value
+	set branch=%page.%GetComponentById("newBranch").value
+	
+	if '##class(CFDSource.System).Exists(name) {
+		&js<window.alert('There is a problem as, #(name)# is not a registered CFD System. Cannot end feature.');>	
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("FetchSource", name, pull, branch)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="FetchSource">
+<Description>
+Main method to end a feature</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>project:%String,pull:%Boolean,branch:%String</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="Fetch"
+	
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(project)
+		
+		if branch'="" {
+			set sc=system.SwitchFeature(branch, pull, .tTrace)
+		}
+		else {
+			set sc=system.Import(pull, .tTrace)
+		}
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.ImportProject">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63038,60753.250237</TimeChanged>
+<TimeCreated>62660,76105.371683</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Project Settings</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will clone a project from a remote GIT repository and import it</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="" label="Name:" enclosingClass="fld" size="80" />
+<text id="repo" name="Repo" value="" label="Repository:" enclosingClass="fld" size="80" />
+<html enclosingClass="notes">Use a GIT URL that requires no password. Either file:// or GITHub if private key with no passphrase</html>
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Main method to package</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set repo=%page.%GetComponentById("repo").value
+	if repo="" {
+		&js<window.alert('You must enter a GIT repository URL');>
+		quit 0
+	}
+	
+	set name=%page.%GetComponentById("name").value
+	if name="" {
+		&js<window.alert('You must enter a system name');>
+		quit 0
+	}
+	
+	if ##class(CFDSource.System).Exists(name) {
+		&js<window.alert('The repository already exists. Cannot create new project.');>
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("ImportProject", repo, name)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="ImportProject">
+<Description>
+Main method to package</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>repo,name</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="Import Project"
+		
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(name)
+		set sc=system.Clone(repo, .tTrace)
+	}
+	catch ex {
+		do tTrace.AddCheckpoint("Caught!: "_$system.Status.GetErrorText(ex.AsStatus()))
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.NewProject">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63039,8760.944107</TimeChanged>
+<TimeCreated>62660,75394.551545</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Project Settings</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will create a new project in a new namespace which will be initialised for GIT and Confidence</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="groupId" name="GroupId" value="" label="Group ID:" enclosingClass="fld" size="60" />
+<text id="version" name="Version" value="0.1" label="Version:" enclosingClass="fld" />
+<textarea id="brief" name="Brief" value="" label="Brief" enclosingClass="fld" cols="60" rows="2"  />
+<text id="testPrefix" name="TestPrefix" value="" label="Test Prefix:" enclosingClass="fld" size="80" />
+
+<combobox id="repoType" name="RepoType" displayList="None,GITHub,GIT File" valueList="none,github,gitfile" onchange="zenPage.onChangeRepo()" />
+<vgroup id="gitRepo" hidden="true">
+<text id="user" name="User" value="" label="User:" enclosingClass="fld" />
+<text id="username" name="UserName" value="" label="GIT Login ID:" enclosingClass="fld" size="40" />
+<password id="password" name="Password" value="" label="GIT Password:" enclosingClass="fld" size="40" />
+<html enclosingClass="notes">Your GIT Username and Password are not stored at all (they do go via HTTP to Caché server though)</html>
+</vgroup>
+<vgroup id="fileRepo" hidden="true">
+<text id="path" name="Path" value="" label="Path:" enclosingClass="fld" size="80" />
+</vgroup>
+
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+
+</pane>
+]]></Data>
+</XData>
+
+<Method name="onChangeRepo">
+<Description>
+Shows/Hides the relevant fields</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[
+	var val=this.getComponentById("repoType").getValue();
+	if ( val == "github" ) {
+		this.getComponentById("gitRepo").setHidden(false);
+		this.getComponentById("fileRepo").setHidden(true);
+	}
+	else if ( val == "gitfile" ) {
+		this.getComponentById("gitRepo").setHidden(true);
+		this.getComponentById("fileRepo").setHidden(false);
+	}
+	else {
+		this.getComponentById("gitRepo").setHidden(true);
+		this.getComponentById("fileRepo").setHidden(true);
+	}
+	
+	return true;
+]]></Implementation>
+</Method>
+
+<Method name="DoStartTask">
+<Description>
+Zen method to package</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set name=%page.%GetComponentById("name").value
+	set groupId=$ZSTRIP(%page.%GetComponentById("groupId").value, "<>WCP")
+	set version=$ZSTRIP($ZSTRIP(%page.%GetComponentById("version").value, "<>WCP"), "*A")
+	set desc=$ZSTRIP(%page.%GetComponentById("brief").value, "<>WCP")
+	set testPrefix=$ZSTRIP(%page.%GetComponentById("testPrefix").value, "<>WCP")
+	set repotype=%page.%GetComponentById("repoType").value
+	set user=%page.%GetComponentById("user").value
+	set username=%page.%GetComponentById("username").value
+	set password=%page.%GetComponentById("password").value
+	set path=%page.%GetComponentById("path").value
+	
+	if ##class(CFDSource.System).Exists(name) {
+		&js<window.alert('The repository already exists. Cannot create new project.');>
+		quit 0
+	}
+	
+	if groupId="" {
+		&js<window.alert('A project must have a group Id');>
+		quit 0
+	}
+	
+	if repotype="github" {
+		set:user="" msg="You must enter your GIT username for a GITHub Repository"
+		set:username="" msg="You must enter your GIT user ID (email) for a GITHub Repository"
+		set:password="" msg="You must enter your GIT password for a GITHub Repository"
+		
+		if $G(msg)'="" {
+			&js<window.alert('#(msg)#');>
+			quit 0
+		}
+	}
+	elseif repotype="gitfile" {
+		if path="" {
+			&js<window.alert('A path is required for a GIT File repository');>
+			quit 0
+		}
+		elseif '##class(%File).Exists(path)&&'##class(%File).CreateDirectoryChain(path) {
+			&js<window.alert('A valid path is required for a GIT File repository');>
+			quit 0
+		}
+	}
+	
+	do ..%RunBackgroundMethod("NewProject", name, groupId, version, desc, testPrefix, repotype, user, username, password, path)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="NewProject">
+<Description>
+Main method to package</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>name,groupId,version,desc,testPrefix,repo,user,username,password,path</FormalSpec>
+<Implementation><![CDATA[
+	&js<var ta=zenPage.getComponentById('output'); ta.setValue('Creation of new project has started.\nAn alert will display when completed.\nThis does take a long time');>
+	
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="New Project"
+		
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(name)
+		set system.GroupId=groupId
+		set system.Version=version
+		set system.Brief=desc
+		set system.TestPrefix=testPrefix
+		
+		// Create Remote
+		set sc=$$$OK
+		set tRepoUrl=""
+		if repo="github" {
+			set sc=##class(CFDSource.GIT.SourceControl).CreateGITHubRepo(system, user, username, password, .tRepoUrl, .tTrace)
+		}
+		elseif repo="gitfile" {
+			set sc=##class(CFDSource.GIT.SourceControl).CreateFileRepo(system, path, .tRepoUrl, .tTrace)
+		}
+		
+		// Initialise local system (this will push into new repo if we created one)
+		do:$$$ISOK(sc) system.Initialise(tRepoUrl, .tTrace)
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.Package">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63038,60758.652633</TimeChanged>
+<TimeCreated>62660,73252.423454</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Package</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will package your project and output it with the installer ready for installation on a separate (non-development) system</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="branch" name="Branch" value="#(%page.Feature)#" label="Feature:" enclosingClass="fld roFld" size="80" readOnly="true" />
+<text id="version" name="Version" value="#(%page.Version)#" label="Version:" enclosingClass="fld roFld" size="80" readOnly="true" />
+<html enclosingClass="notes">You can not change the version currently and the current feature (if any) is for display purposes</html>
+<checkbox id="final" name="Final" value="0" label="Final" enclosingClass="fld" />
+<html enclosingClass="notes">If final no date time will be stamped on package files</html>
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Zen method to package</Description>
+<FormalSpec>pFinal:%Boolean</FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set final=%page.%GetComponentById("final").value
+	
+	set name=%page.%GetComponentById("name").value
+	if '##class(CFDSource.System).Exists(name) {
+		&js<window.alert('There is a problem as, #(name)# is not a registered CFD System. Cannot package.');>	
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("PackageSource", name, final)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="PackageSource">
+<Description>
+Main method to package</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pProject:%String,pFinal:%Boolean</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="Package"
+	
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(pProject)
+		set sc=system.Package(pFinal, .tTrace)
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.Project">
+<Description>
+Holds the project settings
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseDialog</Super>
+<TimeChanged>63039,8824.96162</TimeChanged>
+<TimeCreated>62659,73438.867481</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Project Settings</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<vgroup enclosingClass="dialog">
+<!-- Description -->
+<!-- <vgroup width="100%" enclosingClass="description">
+<html></html>
+</vgroup> -->
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<hidden id="system" name="System" value="#(%page.Project)#" />
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld roFld" readOnly="true" />
+<text id="groupId" name="GroupId" value="#(%page.GroupId)#" label="Group ID:" enclosingClass="fld roFld" readOnly="false" />
+<text id="version" name="Version" value="#(%page.Version)#" label="Version:" enclosingClass="fld" readOnly="false" />
+<textarea id="brief" name="Brief" value="#(%page.Brief)#" label="Description:" enclosingClass="fld" controlClass="tps" cols="60" rows="2" readOnly="false" />
+<text id="prefix" name="Prefix" value="#(%page.TestPrefix)#" label="Test Prefix:" enclosingClass="fld" readOnly="false" />
+<text id="installer" name="Installer" value="#(%page.Installer)#" label="Installer:" enclosingClass="fld" readOnly="false" />
+<text id="branch" name="Branch" value="#(%page.Feature)#" label="Feature:" enclosingClass="fld roFld" size="80" readOnly="true" />
+
+<pane paneName="CodeAndDataPane" id="codeAndDataPane" />
+</vgroup>
+</vgroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="onfinishHandler">
+<Description>
+This is called when the template is finished;</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[	return true;
+]]></Implementation>
+</Method>
+
+<Method name="%OnSubmit">
+<Description>
+Called automatically when finish is selected</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSubmit:%ZEN.Submit</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	quit:pSubmit.%Action'="finish" ##super(pSubmit)
+	
+	set sysName=pSubmit.%Data("System")
+	set version=$ZSTRIP($ZSTRIP(pSubmit.%Data("Version"), "<>WCP"), "*A")
+	set desc=$ZSTRIP(pSubmit.%Data("Brief"), "<>WCP")
+	set groupId=$ZSTRIP(pSubmit.%Data("GroupId"), "<>WCP")
+	set prefix=$ZSTRIP(pSubmit.%Data("Prefix"), "<>WCP")
+	set installer=$ZSTRIP(pSubmit.%Data("Installer"), "<>WCP")
+	
+	set data=pSubmit.%Data("Data")
+	set testdata=pSubmit.%Data("TestData")
+	
+	// Update the system
+	set sys=##class(CFDSource.System).%New(sysName)
+	quit:sys.GetCurrentFeature()="" $$$ERROR("Cannot update project outside of active feature")
+	
+	set modified=0
+	set:sys.GroupId'=groupId sys.GroupId=groupId,modified=1
+	set:sys.Version'=version sys.Version=version,modified=1
+	set:sys.Brief'=desc sys.Brief=desc,modified=1
+	set:sys.TestPrefix'=prefix sys.TestPrefix=prefix,modified=1
+	set:sys.Installer'=installer sys.Installer=installer,modified=1
+	
+	if data'=pSubmit.%Data("DataO") {
+		set modified=1
+		do sys.Data.Clear()
+		for i=1:1:$L(data, ",") { 
+			set entry=$P(code, ",", i)
+			do sys.Data.SetAt($P(entry, "=", 1), $P(entry, "=", 2))
+		}
+	}
+	
+	if testdata'=pSubmit.%Data("TestDataO") {
+		set modified=1
+		do sys.TestData.Clear()
+		for i=1:1:$L(testdata, ",") { 
+			set entry=$P(testcode, ",", i)
+			do sys.TestData.SetAt($P(entry, "=", 1), $P(entry, "=", 2))
+		}
+	}
+	
+	do:modified sys.Save(1)
+		
+	quit ##super(pSubmit)
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.Settings">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseDialog</Super>
+<TimeChanged>63039,10432.301367</TimeChanged>
+<TimeCreated>62659,73438.867481</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Project Settings</Default>
+</Parameter>
+
+<Property name="RepoUser">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="RepoEmail">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Debug">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="Trace">
+<Type>%String</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Property name="ForwardEdit">
+<Type>%Boolean</Type>
+<Calculated>1</Calculated>
+</Property>
+
+<Method name="DebugGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit $G(^CFDSource("Debug"), 0)
+]]></Implementation>
+</Method>
+
+<Method name="TraceGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit $G(^CFDSource("Trace"), 0)
+]]></Implementation>
+</Method>
+
+<Method name="ForwardEditGet">
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[	quit $G(^CFDSource("ForwardEdit"), 0)
+]]></Implementation>
+</Method>
+
+<Method name="RepoUserGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[	quit $G(^CFDSource("User"))
+]]></Implementation>
+</Method>
+
+<Method name="RepoEmailGet">
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	quit:$G(^CFDSource("User"))'="" $G(^CFDSource("Email", ^CFDSource("User")))
+	quit ""
+]]></Implementation>
+</Method>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<vgroup enclosingClass="dialog">
+<!-- Description -->
+<!-- <vgroup width="100%" enclosingClass="description">
+<html></html>
+</vgroup> -->
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="repoUser" name="repoUser" label="Repo User: " value="#(%page.RepoUser)#" enclosingClass="fld" />
+<text id="repoEmail" name="repoEmail" label="Repo Email: " size="60" value="#(%page.RepoEmail)#" enclosingClass="fld" />
+<combobox id="debug" name="debug" label="Debug" value="#(%page.Debug)#" valueList="0,1,2,3" displayList="Off,Minimal,Full,Dev" enclosingClass="fld" />
+<combobox id="trace" name="trace" label="Trace" value="#(%page.Trace)#" valueList="0,1,2,3" displayList="Off,Steps,Checkpoints,Full" enclosingClass="fld" />
+<checkbox id="edit" name="edit" label="Forward Edit" value="#%page.ForwardEdit)#" enclosingClass="fld" />
+</vgroup>
+</vgroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="onfinishHandler">
+<Description>
+This is called when the template is finished;</Description>
+<Language>javascript</Language>
+<ClientMethod>1</ClientMethod>
+<Implementation><![CDATA[	return true;
+]]></Implementation>
+</Method>
+
+<Method name="%OnSubmit">
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSubmit:%ZEN.Submit</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set user=pSubmit.%Data("repoUser")
+	set email=pSubmit.%Data("repoEmail")
+	set debug=pSubmit.%Data("debug")
+	set edit=pSubmit.%Data("edit")
+	set trace=pSubmit.%Data("trace")
+	
+	if debug'="" { set ^CFDSource("Debug")=debug }
+	else { kill ^CFDSource("Debug") }
+	if trace'="" { set ^CFDSource("Trace")=trace }
+	else { kill ^CFDSource("Trace") }
+	set ^CFDSource("ForwardEdit")=$S(edit="1":1, 1:0)
+	set ^CFDSource("User")=user
+	set:user'="" ^CFDSource("Email", user)=email
+	
+	quit ##super(pSubmit)
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.UI.StartFeature">
+<Description>
+Displays the settings for the current system
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>CFDSource.UI.BaseWizard</Super>
+<TimeChanged>63039,8910.340107</TimeChanged>
+<TimeCreated>62660,5628.405105</TimeCreated>
+
+<Parameter name="TEMPLATETITLE">
+<Description>
+Displayed name of this page.</Description>
+<Default>Start Feature</Default>
+</Parameter>
+
+<XData name="templateBody">
+<Description>
+This XML block defines the contents of this page.</Description>
+<XMLNamespace>http://www.intersystems.com/zen</XMLNamespace>
+<Data><![CDATA[
+<pane xmlns="http://www.intersystems.com/zen">
+<tabGroup id="contents" width="100%">
+<tab id="frmpane" width="100%">
+<vgroup enclosingClass="dialog" width="100%">
+<!-- Description -->
+<vgroup width="100%" enclosingClass="description">
+<html>This will start a new development feature branch. You must be on main develop branch for this to work. The project is fetched from the remote location during the start if the project is sync'd with a remote.</html>
+</vgroup>
+
+<!-- Main Form -->
+<vgroup enclosingClass="frm">
+<text id="name" name="Name" value="#(%page.Project)#" label="Name:" enclosingClass="fld" size="80" readOnly="true"/>
+<text id="feature" name="Feature" value="" label="Feature:" enclosingClass="fld" />
+<html enclosingClass="notes">Keep your feature name short and in line with your development practice. It is common to name features using a key or reference from an external project tracking system</html>
+<checkbox id="fetch" name="Fetch" value="1" label="Pull" enclosingClass="fld" />
+</vgroup>
+</vgroup>
+</tab>
+
+<tab id="outputpane">
+<!-- Output -->
+<vgroup>
+<textarea id="output" name="Output" value="" enclosingStyle="padding-top: 10px;" cols="80" rows="20" />
+</vgroup>
+</tab>
+</tabGroup>
+</pane>
+]]></Data>
+</XData>
+
+<Method name="DoStartTask">
+<Description>
+Zen method to start feature</Description>
+<ReturnType>%Boolean</ReturnType>
+<ZenMethod>1</ZenMethod>
+<Implementation><![CDATA[
+	set name=%page.%GetComponentById("name").value
+	set pull=%page.%GetComponentById("fetch").value
+	set feature=$ZSTRIP(%page.%GetComponentById("feature").value, "<>WCP")
+	if feature="" {
+		&js<window.alert('You have not entered a feature name, the feature must have a name or key');>
+		quit 0
+	}
+	
+	if '##class(CFDSource.System).Exists(name) {
+		&js<window.alert('There is a problem as, #(name)# is not a registered CFD System. Cannot end feature.');>	
+		quit 0
+	}
+	
+	do ..%RunBackgroundMethod("StartFeature", name, feature, pull)
+	quit 1
+]]></Implementation>
+</Method>
+
+<Method name="StartFeature">
+<Description>
+Actually starts the feature</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>project:%String,name:%String,pull:%Boolean</FormalSpec>
+<Implementation><![CDATA[
+	Do ..%SetBackgroundMethodStatus("Started",0)
+	
+	set tTrace=##class(CFDSource.Util.Trace).%New()
+	set ^CacheTempUser.CFDSource("Trace", $J, "Task")="Start Feature"
+	
+	set sc=$$$OK
+	try {
+		set system=##class(CFDSource.System).%New(project)	
+		set sc=system.StartFeature(name, pull, .tTrace)
+	}
+	catch ex {
+		set sc=ex.AsStatus()
+	}
+	
+	if $$$ISERR(sc) { set ^CacheTempUser.CFDSource("Trace", $J, "Status")=$system.Status.GetErrorText(sc) }
+	else { set ^CacheTempUser.CFDSource("Trace", $J, "Status")="Completed Successfully" }
+	
+	Do ..%EndBackgroundMethod()
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.ImportExport">
+<Description>
+This class reads and writes project files to/from the systems
+working directory on the file system.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<TimeChanged>63039,4853.415362</TimeChanged>
+<TimeCreated>63017,78553.778246</TimeCreated>
+
+<Method name="SetupProject">
+<Description>
+This writes out the project's default files</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pDescription:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	// a. Write out the project file
+	set ret=..WriteProject(pSys, pTrace)  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	// b. Write out the default README
+	set:pDescription="" pDescription=pSys.Brief
+	set:pDescription="" pDescription="Empty README for "_pSys.Name_" project"
+	set f=##class(%File).%New(pSys.Location_"README")
+	set ret=f.Open("WSN")  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	set ret=f.WriteLine(pDescription)
+	set:$$$ISOK(ret) ret=f.Flush()
+	do f.Close()
+	
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="WriteFeature">
+<Description>
+This method writes out a feature description file</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pFeature:%String,pDescription:%String,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set root=pSys.Location
+	do:'##class(%File).DirectoryExists(root_"features") ##class(%File).CreateDirectoryChain(root)
+	
+	set f=##class(%File).%New(root_"features/"_pFeature_".txt")
+	set ret=f.Open("WSN")  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	set ret=f.WriteLine(pDescription)
+	set:$$$ISOK(ret) ret=f.Flush()
+	do f.Close()
+	
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="WriteProject">
+<Description>
+This method writes the project out into the given file</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set root=pSys.Location
+	do:'##class(%File).DirectoryExists(root) ##class(%File).CreateDirectoryChain(root)
+	
+	set f=##class(%File).%New(root_".cacheproject")
+	set ret=f.Open("WSN")  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	set:$$$ISOK(ret) ret=f.WriteLine("name="_pSys.Name)
+	set:$$$ISOK(ret) ret=f.WriteLine("group="_pSys.GroupId)
+	set:$$$ISOK(ret) ret=f.WriteLine("version="_pSys.Version)
+	set:$$$ISOK(ret) ret=f.WriteLine("brief="_pSys.Brief)
+	set:$$$ISOK(ret) ret=f.WriteLine("installer="_pSys.Installer)
+	set:$$$ISOK(ret) ret=f.WriteLine("testPrefix="_pSys.TestPrefix)
+	set k=""  while 1 { set g=pSys.Data.GetNext(.k)  quit:k=""  set:$$$ISOK(ret) ret=f.WriteLine("data."_k_"="_g) }
+	set k=""  while 1 { set g=pSys.TestData.GetNext(.k)  quit:k=""  set:$$$ISOK(ret) ret=f.WriteLine("testdata."_k_"="_g) }
+	
+	set:$$$ISOK(ret) ret=f.Flush()
+	do f.Close()
+	
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ReadProject">
+<Description>
+This method writes the project out into the </Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set root=pSys.Location
+	quit:'##class(%File).Exists(root_".cacheproject") $$$ERROR("Project does not exist")
+	
+	set f=##class(%File).%New(root_".cacheproject")
+	set ret=f.Open("RS")  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	do pSys.Data.Clear()
+	do pSys.TestData.Clear()
+	
+	while (ret=1)&&('f.AtEnd) {
+		set len=32000
+		set ln=f.ReadLine(.len, .sc)
+		quit:ln=""
+		
+		set name=$P(ln, "=", 1)
+		set val=$P(ln, "=", 2)
+		if $F(name, ".")>0 {
+			set name=$P(name, ".", 1)
+			set key=$P(name, ".", 2)
+		}
+	
+		if name="name" { set:val'=pSys.Name ret=$$$ERROR(".cacheproject Name does not match system") }
+		elseif name="group" { set pSys.GroupId=val }
+		elseif name="version" { set pSys.Version=val }
+		elseif name="brief" { set pSys.Brief=val }
+		elseif name="installer" { set pSys.Installer=val }
+		elseif name="testPrefix" { set pSys.TestPrefix=val }
+		elseif name="data" { do:$D(key) pSys.Data.SetAt(val, key) }
+		elseif name="testdata" { do:$D(key) pSys.TestData.SetAt(val, key) }
+	}
+		
+	do f.Close()
+	
+	quit:$$$ISERR(ret) pTrace.SetError(ret)
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ExportProject">
+<Description>
+Exports the project to the working directory for the project</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pFullExport:%Boolean=0,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set rootPath=pSys.Location
+	
+	// a. Write out the project descriptor
+	do pTrace.AddCheckpoint("Writing out the Project File")
+	set ret=..WriteProject(pSys, pTrace)  quit:$$$ISERR(ret) ret
+	
+	// b. Get the items that do exist in project and on disk
+	set ret=##class(ProjectItemsUtil).GetProjectItems(pSys, .items, .testItems, pTrace)  quit:$$$ISERR(ret) ret
+	set ret=##class(WorkDirUtil).GetWorkItems(pSys, .workItems, .workTestItems)  quit:$$$ISERR(ret) ret
+	
+	// c. Export out the project
+	set sc=$system.OBJ.Export(pSys.Name_".PRJ", rootPath_pSys.Name_".prj", "/diffexport")
+	
+	// d. Export out std and then test items
+	do pTrace.AddCheckpoint("Exporting Items")
+	for i=1:1:2 {
+		set k=$O(items(""))
+		set:i=2 k=$O(testItems(""))
+		
+		while k'="" {
+			set type=$LG($S(i=2:testItems(k), 1:items(k)), 1)
+			set fileName=..GetItemFileName(k, i=2, type, rootPath)
+			
+			if type="CSP" {
+				set sep=$S($$$ISWINDOWS:"\", 1:"/")
+				
+				set cspApp=$system.CSP.GetDefaultApp($NAMESPACE)
+				set:$E(cspApp, 1)="/" cspApp=$E(cspApp, 2, *)
+				set:($$$ISWINDOWS) cspApp=$REPLACE(cspApp, "/", "\")
+				set res=$system.Util.InstallDirectory()_cspApp_sep_k
+				
+				set dir=$P(fileName, sep, 1, $L(fileName, sep)-1)
+			
+				do pTrace.AddPOI("Writing out CSP: "_res)	
+				do:'##class(%File).DirectoryExists(dir) ##class(%File).CreateDirectoryChain(dir)
+				set sc=$S(##class(%File).CopyFile(res, dir)=1:$$$OK, 1:$$$ERROR("Failed to copy resource"))
+			}
+			elseif type="GBL" {
+				set gbl=$LG($S(i=2:testItems(k), 1:items(k)), 3)
+				do pTrace.AddPOI("Writing out GBL: "_gbl)	
+				set sc=$system.OBJ.Export(gbl_".GBL", fileName, "/diffexport")
+			}
+			else {
+				do pTrace.AddPOI("Writing out Code: "_k)	
+				set export=$S(pFullExport:1, 1:..ShouldExportItem(k, fileName, $LG($S(i=2:testItems(k), 1:items(k)), 2)))
+				if export {
+					set sc=$system.OBJ.Export(k, fileName, "/diffexport")
+				}
+			}
+		
+			set k=$S(i=1:$O(items(k)), 1:$O(testItems(k)))
+		}
+	}
+	
+	// e. Delete any extra files that where present
+	do pTrace.AddCheckpoint("Deleting items present")
+	set k=$O(workItems(""))
+	while k'="" {
+		if $D(items(k))=0 {
+			do pTrace.AddWarning("Missing Item! Delete? TODO: "_$LG(workItems(k)))
+			//do ##class(%File).Delete($LG(workItems(k), 3))
+		}
+		set k=$O(workItems(k))
+	}
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ImportProject">
+<Description>
+Imports the project from the working directory for the project</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,&pImportItems,pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set ret=$$$OK
+	set rootPath=pSys.Location
+	
+	// Get Project Items now for later potential delete
+	do ##class(ProjectItemsUtil).GetProjectItems(pSys, .items, .testItems, pTrace)
+	
+	// a. Import the Project Description
+	do pTrace.AddCheckpoint("Importing Project Desc")
+	set ret=..ReadProject(pSys, pTrace)  quit:$$$ISERR(ret) pTrace.SetError(ret)
+	
+	// b. Import the source
+	do pTrace.AddCheckpoint("Importing Project Source")
+	if $$$ISWINDOWS {
+		set sep="\"
+		set dirs=$LB("src\main\cache\","src\main\resources\","src\main\data\","src\test\cache\","src\test\resources\","src\test\data\")
+	}
+	else {
+		set sep="/"
+		set dirs=$LB("src/main/cache/","src/main/resources/","src/main/data/","src/test/cache/","src/test/resources/","src/test/data/")
+	}
+	
+	for i=1:1:6 {
+		set path=rootPath_$LG(dirs, i)
+		if ##class(%File).Exists(path) {
+			do $system.OBJ.ImportDir(path, "*.*", "c", .errors, 1, .imported)
+			
+			if $G(errors)>0 { 
+				set k=$O(errors(""))
+				while k'="" { do pTrace.AddWarning(k_": "_errors(k))  set k=$O(errors(k)) }
+				set ret=$$$ERROR("Failed to import: "_path)
+				quit
+			}
+			else { 
+				do pTrace.AddCheckpoint("Imported Path: "_path)
+				set k=$O(imported(""))
+				while k'="" { 
+					set name=k
+					set ext=$ZCVT($P(name,".",$L(name,".")), "l")
+					set type=$S(i=2||(i=5):"CSP", ext="cls":"CLS", ext="inc":"MAC", ext="mac":"MAC", 1:"OTH")
+					set $P(name,".",$L(name,"."))=ext
+					
+					if (i=2)||(i=5) {
+						set app=$system.CSP.GetDefaultApp($NAMESPACE)
+						set:($E(app, 1)="/")&&($E(name, 1)'="/") app=$E(app, 2, *)
+						set name=$E(name, $F(name, app_"/"), *)
+						set name=$REPLACE(name, "/", ".")
+					}
+					
+					set pImportItems(name)=$LB(type)
+					set k=$O(imported(k)) 
+				}
+			}
+		}
+	}
+	quit:$$$ISERR(ret) ret
+	
+	// c. Import the PRJ file
+	set ret=$system.OBJ.Load(rootPath_pSys.Name_".prj", "ck")
+	
+	// d. Delete any project (old) items no longer on file
+	// FUTURE: Should be able to do this with pImportItems instead of looking for files
+	do pTrace.AddCheckpoint("Deleting Old Project Items")
+	for i=1:1:2 {
+		set k=$S(i=1:$O(items("")), 1:$O(testItems("")))
+		while k'="" {
+			set type=$LG($S(i=1:items(k), 1:testItems(k)), 1)
+			set fileName=..GetItemFileName(k, (i=2), $LG($S(i=1:items(k), 1:testItems(k)), 1), rootPath)
+			
+			if '##class(%File).Exists(fileName) {
+				if type="CLS"||(type="PKG") {
+					do pTrace.AddPOI("Deleting Class: "_k)
+					set sc=$system.OBJ.Delete(k)
+					do:$$$ISERR(sc) pTrace.AddWarning("Cannot delete class ["_k_"]: "_sc)
+				}
+				elseif type="MAC" {
+					set rname=$S($L(k, ".")>1:$P(k, ".", 1, $L(k, ".")-1), 1:k)
+					do pTrace.AddPOI("Deleting Routine: "_rname)
+					if $F($REVERSE(k), "cni.")=5 { kill ^rINC(rname) }
+					elseif $F($REVERSE(k), "cni.")=5 { 
+						kill ^rMAC(rname) 
+						// rMACSAVE?? rOBJ??
+					}
+					else { do pTrace.AddWarning("Cannot remove unknown routine: "_k) }
+				}
+				elseif type="CSP" {
+					set cspApp=$system.CSP.GetDefaultApp($NAMESPACE)
+					set:$E(cspApp, 1)="/" cspApp=$E(cspApp, 2, *)
+					set:($$$ISWINDOWS) cspApp=$REPLACE(cspApp, "/", "\")
+					set res=$system.Util.InstallDirectory()_cspApp_sep_k
+				
+					do pTrace.AddPOI("Deleting CSP Resource: "_res)
+					set sc=##class(%File).Delete(res)
+					do:sc'=1 pTrace.AddWarning("Cannot delete CSP Resource ["_res_"]: "_sc)
+				}
+				else {
+					do pTrace.AddWarning("Unknown Resource to Delete: "_k)
+				}
+			}
+			
+			set k=$S(i=1:$O(items(k)), 1:$O(testItems(k)))
+		}
+	}
+	
+	// FUTURE: Delete any globals!
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="GetItemFileName">
+<Description>
+This gets an items filename</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>itemName:%String,test:%Boolean,type:%String,baseLocation:%String</FormalSpec>
+<Private>1</Private>
+<ReturnType>%String</ReturnType>
+<Implementation><![CDATA[
+	/// CSP resource
+	if type="CSP" {
+		set fileName=baseLocation_"src/"_$S(test:"test", 1:"main")_"/resources"
+		set:($$$ISWINDOWS) fileName=$REPLACE(fileName, "/", "\")
+		set fileName=fileName_$S($$$ISWINDOWS:"\", 1:"/")_itemName
+	}
+	
+	/// Normal resource
+	else {
+		set fileName=baseLocation_"src/"_$S(test:"test", 1:"main")_"/cache"
+		for i=1:1:($L(itemName, ".")-1) set fileName=fileName_"/"_$P(itemName, ".", i)
+		set:($$$ISWINDOWS) fileName=$REPLACE(fileName, "/", "\")
+		set fileName=fileName_"."_$P(itemName, ".", $L(itemName, "."))
+	}
+	
+	quit fileName
+]]></Implementation>
+</Method>
+
+<Method name="ShouldExportItem">
+<Description>
+Helper to work out if an item should be exported or not based
+on whether the item is newer on disk or not.
+TODO: Review need for this (poss just export)</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>itemName:%String,fileName:%String,itemModified:%String</FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set export=1
+	if ##class(%File).Exists(fileName) {
+		set f=##class(%File).%New(fileName)
+		
+		set fileDay=f.DateModified
+		set fileTime=$P(f.DateModified, ",", 2)
+		set fileDay=$P(fileDay, ",", 1)
+		
+		set itemDay=$P(itemModified, ",", 1)
+		set itemTime=$P(itemModified, ",", 2)
+		
+		if fileDay>itemDay { set export=0 }
+		elseif (fileDay=itemDay)&&(fileTime>itemTime) { set export=0 }
+		// otherwise the item is newer than on file
+	}
+	
+	quit export
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.OSCommand">
+<Description>
+Utility class for represeting an individual OS level operation.
+The operation can be run and the output is saved in the Output stream.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<Super>%RegisteredObject</Super>
+<TimeChanged>63038,60672.359205</TimeChanged>
+<TimeCreated>62996,57804.048324</TimeCreated>
+
+<Property name="Trace">
+<Description>
+The trace object to write output into</Description>
+<Type>CFDSource.Util.Trace</Type>
+</Property>
+
+<Property name="Path">
+<Description>
+The directory to be in when running the command (if blank, no move to this directory is made)</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Command">
+<Description>
+The core command to run (this should include any path information to the command itself)</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Args">
+<Description>
+The additional arguments (if set appended to comment)</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="RanCommand">
+<Description>
+Sets the command actual run</Description>
+<Type>%String</Type>
+</Property>
+
+<Property name="Output">
+<Description>
+Holds the output stream when command is run</Description>
+<Type>%Stream.TmpCharacter</Type>
+</Property>
+
+<Method name="%OnNew">
+<Description>
+Overridden to set initial properties</Description>
+<FormalSpec>pTrace:CFDSource.Util.Trace,pPath:%String,pCmd:%String,pArgs:%String</FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<ServerOnly>1</ServerOnly>
+<Implementation><![CDATA[
+	set ..Trace=pTrace
+	set ..Path=pPath
+	set ..Command=pCmd
+	set ..Args=pArgs
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="Run">
+<Description>
+This method forms the super command and runs it</Description>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	// Form and save command
+	set tCmd=..Command_$S(..Args'="":" "_..Args, 1:"")
+	if ..Path'="" {
+		if ($$$ISWINDOWS) { set tCmd="cmd /C ""cd /D "_..Path_" & "_tCmd_"""" }
+		else { set tCmd="bash -exec ""cd "_..Path_"; "_tCmd_" 2>&1""" }
+	}
+	set ..RanCommand=tCmd
+	do ..Trace.AddPOI("Running "_..Command_" "_..Args_" ...")
+	
+	// Run, recording output
+	set ret=$$$ERROR("Failed to run command, unknown")
+	try {
+		set currentIo=$IO
+		open tCmd:("QR"):5 
+		if '$TEST throw
+		use tCmd
+		set tEof=$zu(68,40,1)
+		for j=1:1 {
+			quit:$zeof
+			read tLine
+			do ..Output.WriteLine(tLine)
+			do ..Trace.AddOutput($I(line), tLine)
+		}
+		set tEof=$zu(68,40,tEof)
+		close tCmd
+		use $IO
+		set ret=$$$OK
+	}
+	catch (ex) {
+		close:$D(tCmd) tCmd
+		set ret=ex.AsStatus()
+	}
+	
+	do ..Trace.AddPOI("Completed "_..Command_" "_..Args_": "_$S($$$ISERR(ret):$system.Status.GetErrorText(ret), 1:"ok"))
+	
+	quit ret
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.Package">
+<Description>
+Utility class packages out a System
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%occStatus</IncludeCode>
+<TimeChanged>63039,4798.782225</TimeChanged>
+<TimeCreated>62579,80821.723859</TimeCreated>
+
+<Method name="ExportPackage">
+<Description>
+Packages the project into a complete package (one for production items, 
+one for test). The installer, if there is one is also output separately.
+If final is specified, then the file will have no date. Otherwise it will.</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec>pSys:CFDSource.System,pFinal:%Boolean,pTrace:CFDSource.Util.Trace</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set ret=##class(ProjectItemsUtil).GetProjectItems(pSys, .items, .testItems)  quit:$$$ISERR(ret) ret
+	
+	// Main
+	do pTrace.AddCheckpoint("Writing Main Package")
+	kill export
+	set k=$O(items(""))
+	while k'="" {
+		set type=$LG(items(k), 1)
+		if type="CSP" { set cls=$LG(items(k), 3) }
+		elseif type="GBL" { set cls=$LG(items(k), 3)_".GBL" }
+		else { set cls=k }
+		
+		set:$G(cls)'="" export(cls)=""
+		kill cls
+		
+		set k=$O(items(k))
+	}
+	
+	if $O(export(""))'="" {
+		set fileName=pSys.Location_"packages/"_pSys.Name_"-"_pSys.Version_$S(pFinal:"", 1:"-"_$REPLACE($ZDT($H, 8, 8), ":", ""))_".xml"
+		set ret=$system.OBJ.Export(.export, fileName)
+		quit:$$$ISERR(ret) ret
+	}
+	
+	// Test
+	do pTrace.AddCheckpoint("Writing Test Package")
+	kill export
+	set export=""
+	set k=$O(testItems(""))
+	while k'="" {
+		set type=$LG(testItems(k), 1)
+		if type="CSP" { set cls=$LG(items(k), 3) }
+		elseif type="GBL" { set cls=$LG(items(k), 3)_".GBL" }
+		else { set cls=k }
+		
+		set:$G(cls)'="" export(cls)=""
+		kill cls
+		
+		set k=$O(testItems(k))
+	}
+	
+	if $O(export(""))'="" {
+		set fileName=pSys.Location_"packages/"_pSys.Name_"-test-"_pSys.Version_$S(pFinal:"", 1:"-"_$REPLACE($ZDT($H, 8, 8), ":", ""))_".xml"
+		set ret=$system.OBJ.Export(.export, fileName)
+		quit:$$$ISERR(ret) ret
+	}
+	
+	// Installer
+	if pSys.Installer'="" {
+		do pTrace.AddCheckpoint("Writing Test Package")
+		set fileName=pSys.Location_"packages/"_pSys.Name_"-installer-"_pSys.Version_$S(pFinal:"", 1:"-"_$REPLACE($ZDT($H, 8, 8), ":", ""))_".xml"
+		set ret=$system.OBJ.Export(pSys.Installer, fileName)
+	}
+	
+	quit ret
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.ProjectItemsUtil">
+<Description>
+This class will resolve the system to find all the items
+That are in the project.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<TimeChanged>63039,6979.62525</TimeChanged>
+<TimeCreated>63016,78088.416355</TimeCreated>
+
+<Method name="GetProjectItems">
+<Description>
+This method will get all the code/csp artefacts for given project.
+The test prefix is used to determine if the artefact is only a {unit} test artefact.
+If pItems = "skip" then non-test items are not returned
+If pTestItems = "skip" then test items are not returned</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,&pItems,&pTestItems,pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set skipTest=($G(pTestItems)="skip")
+	set skipItem=($G(pItems)="skip")
+	
+	set tTestPrefix=pSys.TestPrefix
+	set prj=##class(%Studio.Project).%OpenId(pSys.Name)
+	set count=prj.Items.Count()
+	for i=1:1:count {
+		set item=prj.Items.GetAt(i)
+		#dim item As %Studio.ProjectItem
+		
+		set test=0  for j=1:1:$L(tTestPrefix, ",") { set pr=$P(tTestPrefix,",",j)  continue:pr=""  set:($F(item.Name, pr)=($L(pr)+1)) test=1 }
+		continue:test&&skipTest
+		continue:'test&&skipItem
+		
+		// Add class on directly
+		if item.Type="CLS" {
+			if 'test {
+				set clsName=$P(item.Name, ".", $L(item.Name, "."))
+				for j=1:1:$L(tTestPrefix, ",") { set pr=$P(tTestPrefix,",",j)  continue:pr=""  set:($E($RE(pr), 1)'=".")&&($F(clsName, pr)=$L(pr)+1) test=1 }
+				continue:test&&skipTest
+				continue:'test&&skipItem
+			}
+			
+			set dt=$S($D(^rINDEX(item.Name_".0", "OBJ")):$ZDTH($LG(^rINDEX(item.Name_".0", "OBJ"), 1), 3), 1:"")
+			set:test pTestItems(item.Name_".cls")=$LB("CLS", dt, item.Name)
+			set:'test pItems(item.Name_".cls")=$LB("CLS", dt, item.Name)
+		}
+		
+		elseif item.Type="MAC" {
+			set name=item.Name
+			set:$L(name, ".")>1 $P(name, ".", $L(name, "."))=$ZCVT($P(name, ".", $L(name, ".")), "L")
+			
+			set dt=$LG($G(^rINDEX($P(name, ".", 1, $L(name, ".")-1), $ZCVT($P(name, ".", $L(name, ".")), "U"))), 1)
+			set:test pTestItems(name)=$LB(item.Type, $S(dt="":"", 1:$ZDTH(dt, 3)), item.Name)
+			set:'test pItems(name)=$LB(item.Type, $S(dt="":"", 1:$ZDTH(dt, 3)), item.Name)
+		}
+		
+		elseif item.Type="CSP" {
+			// FUTURE: This area is a bit weak as only handles default CSP App
+			set app=$system.CSP.GetDefaultApp($NAMESPACE)
+			set:($E(app, 1)="/")&&($E(item.Name, 1)'="/") app=$E(app, 2, *)
+			set name=$E(item.Name, $F(item.Name, app_"/"), *)
+			set name=$REPLACE(name, "/", ".")
+			
+			set:test pTestItems(name)=$LB("CSP", "", item.Name)
+			set:'test pItems(name)=$LB("CSP", "", item.Name)
+		}
+		
+		// Work out classes in package
+		elseif item.Type="PKG" {
+			kill tPkgItems
+			do ..FindClasses(item.Name, .tPkgItems)
+			set k=$O(tPkgItems(""))
+			while k'="" {
+				set item=k
+				set k=$O(tPkgItems(k))
+				
+				set itest=test
+				if 'itest {
+					set clsName=$P(item, ".", $L(item, ".")-1)
+					for j=1:1:$L(tTestPrefix, ",") { set pr=$P(tTestPrefix,",",j)  continue:pr=""  set:($E($RE(pr), 1)'=".")&&($F(clsName, pr)=($L(pr)+1)) itest=1 }
+					continue:itest&&skipTest
+					continue:'itest&&skipItem
+				}
+				
+				set:itest pTestItems(item)=$LB("PKG", tPkgItems(item))
+				set:'itest pItems(item)=$LB("PKG", tPkgItems(item))
+			}
+		}
+		
+		else {
+			do pTrace.AddWarning("Unrecognised Project Item: "_item.Name_":"_item.Type)
+		}
+	}
+	
+	// Now add on data
+	set k=""
+	while 1 {
+		set globalName=pSys.Data.GetNext(.k)
+		quit:k=""
+		set pItems(k_".gbl")=$LB("GBL", "", globalName)
+	}
+	
+	// And test data
+	set k=""
+	while 1 {
+		set globalName=pSys.TestData.GetNext(.k)
+		quit:k=""
+		set pTestItems(k_".gbl")=$LB("GBL", "", globalName)
+	}
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="FindClasses">
+<Description>
+This helper method find classes matching a pattern</Description>
+<Internal>1</Internal>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[prefix,&items,&classes]]></FormalSpec>
+<ReturnType>%Integer</ReturnType>
+<Implementation><![CDATA[
+	do:$D(classes)<10 $system.OBJ.GetClassList(.classes)
+	
+	set found=0
+	set k=$O(classes(""))
+	while k'="" {
+		if ($F(k, prefix)=($L(prefix)+1))&&'($D(^oddDEF(k,72))#2) {
+			set items(k_".cls")=$S($D(^rINDEX(k_".0", "OBJ")):$ZDTH($LG(^rINDEX(k_".0", "OBJ"), 1), 3), 1:"")
+			set found=found+1
+		}
+			
+		set k=$O(classes(k))
+	}
+	
+	quit found
+]]></Implementation>
+</Method>
+
+<Method name="IsInProject">
+<Description>
+This will determine if the given resource is in the project linked to the CFD System.</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pProject:%String,pName:%String,&pTest:%Boolean]]></FormalSpec>
+<ReturnType>%Boolean</ReturnType>
+<Implementation><![CDATA[
+	set ext=$P(pName, ".", $L(pName, "."))
+	set base=$P(pName, ".", 1, $L(pName, ".")-1)
+
+	set ret=0	
+	set prj=##class(%Studio.Project).%OpenId(pProject)
+	set count=prj.Items.Count()
+	for i=1:1:count {
+		set item=prj.Items.GetAt(i)
+		#dim item As %Studio.ProjectItem
+		
+		if item.Type="PKG" {
+			set:ext="cls"&&($F(pName, item.Name)=($L(item.Name)+1)) ret=1
+		}
+		elseif item.Type="CLS" {
+			set ret=(item.Name=base)
+		}
+		
+		quit:ret=1
+		continue:ext="cls"
+		
+		if item.Type="MAC" {
+			set ret=(item.Name=(base_"."_$ZCVT(ext, "U")))
+		}
+		
+		quit:ret=1
+		continue:ext="mac"
+		continue:ext="inc"
+		
+		if item.Type="CSP" {
+			set app=$system.CSP.GetDefaultApp($NAMESPACE)
+			set:($E(app, 1)="/")&&($E(item.Name, 1)'="/") app=$E(app, 2, *)
+			set item=$E(item.Name, $F(item.Name, app_"/"), *)
+			set item=$REPLACE(item, "/", ".")
+			
+			set ret=(item=pName)
+		}
+		
+		quit:ret=1
+	}
+	
+	quit ret
+]]></Implementation>
+</Method>
+
+<Method name="ReconcileProject">
+<Description>
+This will reconcile the studio project to the source items imported in.</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,&sourceItems,pTrace:CFDSource.Util.Trace]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	// a. Work out distinct packages in source items and the other items
+	set k=$O(sourceItems(""))
+	while k'="" {
+		if $F($REVERSE(k), "slc.")=5 {
+			set l=$L(k, ".")
+			set pkg=$P(k, ".", 1, l-2)
+			set cls=$P(k, ".", l-1, l)
+			set items(pkg, cls)=""
+		}
+		else {
+			set items(k)=""
+		}
+		
+		set k=$O(sourceItems(k))
+	}
+	
+	// b. Get hold of the project
+	if ##class(%Studio.Project).%ExistsId(pSys.Name) { set prj=##class(%Studio.Project).%OpenId(pSys.Name) }
+	else {
+		set prj=##class(%Studio.Project).%New()
+		set prj.Name=pSys.Name
+		do prj.%Save()
+		do pTrace.AddPOI("Created new Studio Project for System: "_pSys.Name)
+	}
+	set changed=0	// Marker to indicate if we have changed the project
+	
+	// c. Remove any packages/items in project
+	do pTrace.AddPOI("Checking Studio Project correct")
+	set count=prj.Items.Count()
+	for i=1:1:count {
+		set item=prj.Items.GetAt(i)
+		#dim item As %Studio.ProjectItem
+		
+		if item.Type="PKG" {
+			if $D(items(item.Name))=0 {
+				set sc=##class(%Studio.ProjectItem).%DeleteId(item.%Id())
+				if $$$ISOK(sc) { do pTrace.AddPOI("Remove Studio Item in project ["_item.Name_":"_item.Type_"]") }
+				else { do pTrace.AddWarning("Failed to remove Studio item ["_item.Name_":"_item.Type_"] in project: "_sc) }
+				set changed=1	
+			}
+			else {
+				kill items(item.Name)
+				
+				// Remove next packages that are within in this package
+				set k=$O(items(item.Name))
+				while k'=""&&($D(items(k))>1)&&($F(k, item.Name)=($L(item.Name)+1)) {
+					kill items(k)
+					set k=$O(items(k))
+				}
+			}
+		}
+		elseif item.Type="CLS" {
+			set l=$L(item.Name, ".")
+			set cls=$P(item.Name, ".", l-1)_".cls"
+			set pkg=$P(item.Name, ".", 1, l-2)
+			
+			if $D(items(pkg, cls))=0 {
+				set sc=##class(%Studio.ProjectItem).%DeleteId(item.%Id())
+				if $$$ISOK(sc) { do pTrace.AddPOI("Remove Studio Item in project ["_item.Name_":"_item.Type_"]") }
+				else { do pTrace.AddWarning("Failed to remove Studio item ["_item.Name_":"_item.Type_"] in project: "_sc) }
+				set changed=1	
+			}
+			else {
+				kill items(pkg, cls)
+			}
+		}
+		elseif item.Type="MAC" {
+			set name=item.Name
+			set:$L(name, ".")>1 $P(name, ".", $L(name, "."))=$ZCVT($P(name, ".", $L(name, ".")), "l")
+			
+			if $D(items(name))=0 {
+				set sc=##class(%Studio.ProjectItem).%DeleteId(item.%Id())
+				if $$$ISOK(sc) { do pTrace.AddPOI("Remove Studio Item in project ["_item.Name_":"_item.Type_"]") }
+				else { do pTrace.AddWarning("Failed to remove Studio item ["_item.Name_":"_item.Type_"] in project: "_sc) }
+				set changed=1	
+			}
+			else {
+				kill items(name)
+			}
+		}
+		elseif item.Type="CSP" {
+			set app=$system.CSP.GetDefaultApp($NAMESPACE)
+			set:($E(app, 1)="/")&&($E(item.Name, 1)'="/") app=$E(app, 2, *)
+			set name=$E(item.Name, $F(item.Name, app_"/"), *)
+			set name=$REPLACE(name, "/", ".")
+			
+			if $D(items(name))=0 {
+				set sc=##class(%Studio.ProjectItem).%DeleteId(item.%Id())
+				if $$$ISOK(sc) { do pTrace.AddPOI("Remove Studio Item in project ["_item.Name_":"_item.Type_"]") }
+				else { do pTrace.AddWarning("Failed to remove Studio item ["_item.Name_":"_item.Type_"] in project: "_sc) }
+				set changed=1
+			}
+			else {
+				kill items(name)
+			}
+		}
+		else {
+			do pTrace.AddWarning("Unrecognised Project Item: "_item.Name_":"_item.Type)
+		}
+	}
+	
+	// d. Add on any items that remain
+	do pTrace.AddPOI("Processing any missing studio items")
+	set k=$O(items(""))
+	while k'="" {
+		if $D(items(k))>1 { set type="PKG" }
+		else {
+			set ext=$P(k, ".", $L(k, "."))
+			set type=$CASE(ext, "cls":"CLS", "mac":"MAC", "inc":"MAC", :"CSP")
+		}
+		
+		if $G(type)'="" {
+			set name=$S(type="CSP":$system.CSP.GetDefaultApp($NAMESPACE)_"/"_k, 1:k)
+			set item=##class(%Studio.ProjectItem).%New()
+			set item.Project=prj
+			set item.Name=name
+			set item.Type=type
+			set sc=item.%Save()
+			if $$$ISOK(sc) { do pTrace.AddPOI("Added item to project ["_item.Name_":"_item.Type_"]") }
+			else { do pTrace.AddWarning("Failed to add system item ["_item.Name_":"_item.Type_"] to project: "_sc) }
+			set changed=1
+		}
+		else {
+			do pTrace.AddWarning("Unknown studio project item type: "_k)
+		}
+		
+		set k=$O(items(k))
+	}
+	
+	do:changed pTrace.AddCheckpoint("Studio Project Updated")
+	set ret=$$$OK
+	quit ret
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.Trace">
+<Description>
+Because CFDSource System operations that involve interacting
+with the Working Directory and the internal project are
+potentially long and complex, and instance of this class is
+used to allow steps and checkpoints to be made along the way
+for later review. Storage is in ^CacheTemp
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<Super>%RegisteredObject</Super>
+<TimeChanged>63038,60655.794105</TimeChanged>
+<TimeCreated>63033,34572.219736</TimeCreated>
+
+<Property name="WriteOutput">
+<Description>
+Determines if output also written to device</Description>
+<Type>%Boolean</Type>
+<InitialExpression>0</InitialExpression>
+</Property>
+
+<Property name="Level">
+<Description><![CDATA[
+The level to write out at
+<ol><li>Output steps only</li>
+<li>Include checkpoints</li>
+<li>Include low level output</li></ol>]]></Description>
+<Type>%Integer</Type>
+<InitialExpression>1</InitialExpression>
+</Property>
+
+<Property name="LastStep">
+<Description>
+Count of the steps</Description>
+<Type>%Integer</Type>
+<InitialExpression>0</InitialExpression>
+</Property>
+
+<Property name="SecondStarted">
+<Type>%String</Type>
+</Property>
+
+<Method name="%OnNew">
+<Description>
+Overridden to set properties</Description>
+<FormalSpec>pLevel:%Integer,pOutput:%Boolean=0</FormalSpec>
+<Private>1</Private>
+<ReturnType>%Status</ReturnType>
+<ServerOnly>1</ServerOnly>
+<Implementation><![CDATA[
+	set ..SecondStarted=$P($ZTS, ",", 2)
+	set ..WriteOutput=pOutput
+	set ..Level=$G(pLevel, $G(^CFDSource("Trace"), 2))
+	
+	// Clean down any previous logs
+	kill ^CacheTempUser.CFDSource("Trace", $J)
+	
+	quit $$$OK
+]]></Implementation>
+</Method>
+
+<Method name="ToDevice">
+<Description>
+Writes out all trace output to the device. Used in debugging typically</Description>
+<Implementation><![CDATA[
+	set k=$O(^CacheTempUser.CFDSource("Trace", $J, ""))
+	while k>0 {
+		write ^CacheTempUser.CFDSource("Trace", $J, k),!
+		
+		set k=$O(^CacheTempUser.CFDSource("Trace", $J, k))
+	}
+]]></Implementation>
+</Method>
+
+<Method name="AddStep">
+<Description>
+Adds a new step - note, no return</Description>
+<FormalSpec>pStep:%String</FormalSpec>
+<Implementation><![CDATA[
+	quit:..Level<1
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	set ..LastStep=..LastStep+1
+	set text=tmp_">>> Step "_..LastStep_": "_pStep
+	
+	write:..WriteOutput !,!,text
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=""
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=text
+]]></Implementation>
+</Method>
+
+<Method name="AddCheckpoint">
+<Description>
+Adds a new checkpoint - note, no return</Description>
+<FormalSpec>pPoint:%String</FormalSpec>
+<Implementation><![CDATA[
+	quit:..Level<2
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	write:..WriteOutput !,tmp,".*. ",pPoint
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=tmp_".*. "_pPoint
+]]></Implementation>
+</Method>
+
+<Method name="AddPOI">
+<Description>
+Adds a new point of interest - note, no return</Description>
+<FormalSpec>pPoint:%String</FormalSpec>
+<Implementation><![CDATA[
+	quit:..Level<3
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	write:..WriteOutput !,tmp,"..* ",pPoint
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=tmp_"..* "_pPoint
+]]></Implementation>
+</Method>
+
+<Method name="AddPOIOrWarn">
+<Description>
+Adds a point of interest or warning the point failed
+A warning will be "Failed to "_pPoint
+The status is returned so it can be used</Description>
+<FormalSpec>pPoint:%String,pSc:%Status</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	if $$$ISOK(pSc) {
+		do ..AddPOI(pPoint)
+	}
+	else {
+		do ..AddWarning("Fail!: "_pPoint_": "_$system.Status.GetErrorText(pSc))
+	}
+	
+	quit pSc
+]]></Implementation>
+</Method>
+
+<Method name="AddOutput">
+<Description>
+Adds a low level output - note, no return</Description>
+<FormalSpec>pLineNos:%Integer,pLine:%String</FormalSpec>
+<Implementation><![CDATA[
+	quit:..Level<3
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	set l=tmp_pLineNos_"> "_pLine
+	write:..WriteOutput !,l
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=l
+]]></Implementation>
+</Method>
+
+<Method name="AddWarning">
+<Description>
+Adds a simple warning to the output</Description>
+<FormalSpec>pWarning:%String</FormalSpec>
+<Implementation><![CDATA[
+	quit:..Level<1
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	write:..WriteOutput !,tmp,"!!! ",pWarning
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=tmp_"!!! "_pWarning
+]]></Implementation>
+</Method>
+
+<Method name="SetError">
+<Description>
+Method to add an error to trace. The status is returned so the caller can return it</Description>
+<FormalSpec>pSc:%Status</FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	quit:$$$ISOK(pSc) pSc
+	quit:..Level<1 pSc
+	
+	set tm=$P($ZTS, ",", 2)-..SecondStarted
+	set:tm<0 tm=tm+86400
+	set tmp="["_tm_"] "
+	
+	set text=tmp_"!!! Error: "_$system.Status.GetErrorText(pSc)
+	write:..WriteOutput !,!,text
+	set ^CacheTempUser.CFDSource("Trace", $J, $I(^CacheTempUser.CFDSource("Trace", $J)))=text
+	
+	quit pSc
+]]></Implementation>
+</Method>
+</Class>
+
+
+<Class name="CFDSource.Util.WorkDirUtil">
+<Description>
+Utility class to work out project items in a CFDSource working directory structure.
+
+Copyright, Tom Spencer. This file is part of CFDSource. See root or https://github.com/thegaffer/CFDSource for full GPLv3 license</Description>
+<IncludeCode>%sySite,%occErrors,%occStatus</IncludeCode>
+<TimeChanged>63038,60719.327152</TimeChanged>
+<TimeCreated>63032,36949.855925</TimeCreated>
+
+<Method name="GetWorkItems">
+<Description>
+Retreives all items and test items that exist in the systems
+root or workding directory.
+Note: The returned items will be indexed in classname style
+(i.e. Sample.Class.cls rather than Sample/Class.cls). CSP
+resources will be with / however.</Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[pSys:CFDSource.System,&pItems,&pTestItems]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	if $$$ISWINDOWS {
+		set sep="\"
+		set prefix=$LB("src\main\cache\","src\main\resources\","src\main\data\","src\test\cache\","src\test\resources\","src\test\data\")
+	}
+	else {
+		set sep="/"
+		set prefix=$LB("src/main/cache/","src/main/resources/","src/main/data/","src/test/cache/","src/test/resources/","src/test/data/")
+	}
+	set tDir=pSys.Location
+	set:$E(tDir, *)'=sep tDir=tDir_sep
+	
+	// a. Find all directories
+	set dirs(tDir_$LG(prefix, 1))=0
+	set dirs(tDir_$LG(prefix, 2))=0
+	set dirs(tDir_$LG(prefix, 3))=0
+	set dirs(tDir_$LG(prefix, 4))=0
+	set dirs(tDir_$LG(prefix, 5))=0
+	set dirs(tDir_$LG(prefix, 6))=0
+	set sc=..FindChildDirectories(.dirs)
+	quit:$$$ISERR(sc) sc
+	
+	// b. Now find all files in those directories
+	set rs=##class(%ResultSet).%New("%Library.File:FileSet")
+	set d=$O(dirs(""))
+	while d'="" {
+		if dirs(d)=2 {
+			set sc=rs.Execute(d, "*", 0)
+			quit:$$$ISERR(sc)
+			while rs.%Next() {
+				if rs.Data("Type")="F" {
+					set fileName=rs.Data("Name")
+					set fileExt=$P(fileName, ".", $L(fileName, "."))
+					set name=$E(fileName, $L(tDir)+1, *)
+					for i=1:1:6 {
+						if $F(name, $LG(prefix, i))=($L($LG(prefix, i))+1) {
+							set:(i=1)||(i=4) type=$CASE($ZCVT(fileExt, "l"), "cls":"CLS", "inc":"MAC", "mac":"MAC", "prj":"PRJ")
+							set:(i=2)||(i=5) type="CSP"
+							set:(i=3)||(i=6) type="GBL"
+							
+							// Skip the actual project
+							quit:type="PRJ"
+							
+							if (i=1)||(i=4) { set name=$REPLACE($E(name, ($L($LG(prefix, i))+1), *), sep, ".") }
+							else { set name=$E(name, ($L($LG(prefix, i))+1), *) }
+						
+							set:i<4 pItems(name)=$LB(type, $ZDTH(rs.Data("DateModified"), 3), fileName)
+							set:i>3 pTestItems(name)=$LB(type, $ZDTH(rs.Data("DateModified"), 3), fileName)
+							quit
+						}
+					}
+				}
+			}
+		}
+		
+		quit:$$$ISERR(sc)
+		set d=$O(dirs(d))
+	}
+
+	quit sc
+]]></Implementation>
+</Method>
+
+<Method name="FindChildDirectories">
+<Description><![CDATA[
+This internal method finds all child directories given a set of
+input directories. The input dirs should be on pDirs, i.e.:
+<ul><li>pDirs("c:\tmp\Dir1")=0</li>
+<li>pDirs("c:\tmp\Dir2")=0</li></ul>
+Any directory other than those set =0 will not be evaluated
+Any child directories are added to pDirs (as full path)]]></Description>
+<ClassMethod>1</ClassMethod>
+<FormalSpec><![CDATA[&pDirs]]></FormalSpec>
+<ReturnType>%Status</ReturnType>
+<Implementation><![CDATA[
+	set sc=$$$OK
+	set rs=##class(%ResultSet).%New("%Library.File:FileSet")
+	set foundAll=0
+	while 'foundAll {
+		set foundAll=1
+		set d=$O(pDirs(""))
+		while d'="" {
+			if pDirs(d)=0 {
+				set pDirs(d)=1
+				if ##class(%File).DirectoryExists(d) {
+					set pDirs(d)=2
+					set sc=rs.Execute(d)
+					quit:$$$ISERR(sc)
+				
+					while rs.%Next() {
+						if rs.Data("Type")="D" {
+							set newDirs(rs.Data("Name"))=0
+							set foundAll=0
+						}
+					}
+				}
+			}
+			
+			set d=$O(pDirs(d))
+		}
+		
+		quit:$$$ISERR(sc)
+		merge:$D(newDirs)>0 pDirs=newDirs
+		kill newDirs
+	}
+	
+	quit sc
+]]></Implementation>
+</Method>
+</Class>
+</Export>
