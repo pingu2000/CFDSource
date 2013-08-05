@@ -1,0 +1,6 @@
+name=CFDSource
+group=org.tpspencer
+version=0.1
+brief=Confidence Source Control and Packaging
+installer=
+testPrefix=Test.,Test
