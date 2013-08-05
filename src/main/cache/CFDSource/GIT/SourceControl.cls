@@ -207,7 +207,7 @@ This method should only actually commit if there are changes!</Description>
 				
 	// Commit
 	do pTrace.AddCheckpoint("Committing")
-	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -m """_pMessage_"""")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -m '"_$ZSTRIP(pMessage, "*", "'")_"'")
 	set sc=os.Run()  quit:$$$ISERR(sc) sc
 		
 	// Check!
@@ -263,7 +263,7 @@ is already setup</Description>
 	set sc=os.Run()  quit:$$$ISERR(sc) sc
 		
 	do pTrace.AddCheckpoint("Committing initial source")
-	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -a -m 'Initial Import on New Project'")
+	set os=##class(CFDSource.Util.OSCommand).%New(pTrace, path, "git", "commit -m 'Initial Import on New Project'")
 	set sc=os.Run()  quit:$$$ISERR(sc) sc
 		
 	do pTrace.AddCheckpoint("Creating [develop] branch from master")
